@@ -38,9 +38,14 @@
 
 // EEPROM
 #include <EEPROM.h>
+#ifdef USE_AD9833
 // AD9833 and SPI
 #include <MD_AD9833.h>
 #include <SPI.h>
+#endif
+#ifdef USE_SI5351
+#include <si5351.h>
+#endif
 // JT modes
 #include <JTEncode.h>
 // GPS serial port
@@ -109,8 +114,13 @@ const int FSYNC     = 10;
 const int DATA      = 11;
 const int CLK       = 13;
 
+#ifdef USE_AD9833
 MD_AD9833  DDS(FSYNC);
 //MD_AD9833  DDS(DATA, CLK, FSYNC);
+#endif
+#ifdef USE_SI5351
+Si5351 DDS;
+#endif
 
 // JT
 JTEncode JT;
@@ -136,13 +146,24 @@ void transmit(uint8_t band = 0) {
   Serial.print(F(" "));
   Serial.println(wsprBaseFrq[band] + wsprChanFrq, 3);
 #endif
+#ifdef USE_AD9833
   // Output sine wave
   DDS.setMode(MD_AD9833::MODE_SINE);
+#endif
+#ifdef USE_SI5351
+  // Turn on the output
+  DDS.output_enable(SI5351_CLK2, 1);
+#endif
   nextSym = millis();
   // Transmit the symbols
   for (uint8_t i = 0; i < WSPR_SYMBOL_COUNT; i++) {
     wsprSymbFrq = wsprBaseFrq[band] + wsprChanFrq + (txBuf[i] * wsprToneSep / 1000.0);
+#ifdef USE_AD9833
     DDS.setFrequency(MD_AD9833::CHAN_0, wsprSymbFrq);
+#endif
+#ifdef USE_SI5351
+    DDS.set_freq(wsprSymbFrq * 100, SI5351_CLK0);
+#endif
     nextSym += wsprToneDur;
 #ifdef DEBUG
     Serial.print(i);
@@ -154,7 +175,12 @@ void transmit(uint8_t band = 0) {
     while (millis() < nextSym);
   }
   // Turn off the output
+#ifdef USE_AD9833
   DDS.setMode(MD_AD9833::MODE_OFF);
+#endif
+#ifdef USE_SI5351
+  DDS.output_enable(SI5351_CLK0, 0);
+#endif
 }
 
 /**
@@ -249,10 +275,20 @@ void setup() {
   Serial.print(DATE);
   Serial.println(")");
 
+#ifdef USE_AD9833
   // Initialize AD9833
   DDS.begin();
   // Turn off the output
   DDS.setMode(MD_AD9833::MODE_OFF);
+#endif
+#ifdef USE_SI5351
+  // Initialize the Si5351
+  DDS.init(SI5351_CRYSTAL_LOAD_8PF, 0, 0);
+  // Set for max power if desired
+  DDS.drive_strength(SI5351_CLK2, SI5351_DRIVE_8MA);
+  // Disable the clock initially
+  DDS.output_enable(SI5351_CLK2, 0);
+#endif
 
   // Initialize the random seed
   randomSeed(getRandomSeed());
