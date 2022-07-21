@@ -58,8 +58,21 @@
   $GPGSV,3,2,09,24,,,22,25,,,25,26,54,295,40,30,,,22*4B
   $GPGSV,3,3,09,31,,,42*74
   $GPGLL,,,,,170852.00,V,N*43
+
+  $GPRMC,212620.00,A,4427.64308,N,02607.97828,E,0.012,,040321,,,A*71
+  $GPVTG,,T,,M,0.012,N,0.023,K,A*21
+  $GPGGA,212620.00,4427.64308,N,02607.97828,E,1,05,2.42,145.4,M,34.8,M,,*50
+  $GPGSA,A,3,27,08,16,21,32,,,,,,,,3.55,2.42,2.59*03
+  $GPGSV,4,1,15,01,16,287,,08,63,282,34,10,54,052,,14,04,332,*75
+  $GPGSV,4,2,15,16,06,200,30,18,01,097,,20,20,058,21,21,40,295,35*7C
+  $GPGSV,4,3,15,22,17,239,23,23,21,054,,24,01,045,18,27,62,180,42*77
+  $GPGSV,4,4,15,28,02,337,,32,44,128,30,39,39,181,28*49
+  $GPGLL,4427.64308,N,02607.97828,E,212620.00,A,A*6F
+
 */
 
+// 1623
+// 1599
 
 char call[10] = CALLSIGN;
 char loc[5]   = LOC;
@@ -68,10 +81,18 @@ uint8_t txBuf[255];
 
 const uint16_t wsprToneSep = round(1000UL * 12000 / 8192);  // 1.4648 Hz
 const uint16_t wsprToneDur = round(1000UL * 8192 / 12000);  // 683 ms
-const uint32_t wsprBaseFrq[] = {0UL, 136000UL, 474200UL, 1836600UL, 3592600UL,
+const uint32_t wsprBaseFrq[] = {0UL, 136000UL, 474200UL, 1836600UL, 3568600UL,
                                 5287200UL, 7038600UL, 10138700UL, 14095600UL, 18104600UL,
                                 21094600UL, 24924600UL, 28124600UL, 50293000UL, 144489000UL
                                };
+// Bands
+enum HAM_BANDS {BAND_OFF, BAND_2190, BAND_630, BAND_160,
+                BAND_80, BAND_60, BAND_40, BAND_30, BAND_20,
+                BAND_17, BAND_15, BAND_12, BAND_10, BAND_6, BAND_2
+               };
+// Selected bands
+const uint8_t selBands[] = {BAND_40, BAND_30, BAND_80, BAND_160, BAND_60};
+uint8_t idxBand = 0;
 
 // The next transmission window
 uint32_t nextTX = 0UL;
@@ -79,7 +100,7 @@ uint8_t decim   = DECIMATION;
 
 // Software name and vesion
 const char DEVNAME[]  = "MicroWSPR";
-const char VERSION[]  = "v0.4";
+const char VERSION[]  = "v0.5";
 const char AUTHOR[]   = "Costin Stroie <costinstroie@eridu.eu.org>";
 const char DATE[]     = __DATE__;
 
@@ -107,18 +128,20 @@ float lat = 0.0, lon = 0.0;
 void transmit(uint8_t band = 0) {
   uint32_t nextSym;
   // Choose a random 'channel' (there are 34 6Hz wide channels in 200Hz band)
-  float wsprChanFrq = wsprBaseFrq[band] + 1400 + random(35) * (4.0 * 12000UL / 8192);
+  float wsprChanFrq = 1400 + (random(25) + 5) * (4.0 * 12000UL / 8192);
   float wsprSymbFrq;
 #ifdef DEBUG
   Serial.print(F("Base frequency: "));
-  Serial.println(wsprChanFrq, 3);
+  Serial.print(wsprChanFrq, 3);
+  Serial.print(F(" "));
+  Serial.println(wsprBaseFrq[band] + wsprChanFrq, 3);
 #endif
   // Output sine wave
   DDS.setMode(MD_AD9833::MODE_SINE);
   nextSym = millis();
   // Transmit the symbols
   for (uint8_t i = 0; i < WSPR_SYMBOL_COUNT; i++) {
-    wsprSymbFrq = wsprChanFrq + (txBuf[i] * wsprToneSep / 1000.0);
+    wsprSymbFrq = wsprBaseFrq[band] + wsprChanFrq + (txBuf[i] * wsprToneSep / 1000.0);
     DDS.setFrequency(MD_AD9833::CHAN_0, wsprSymbFrq);
     nextSym += wsprToneDur;
 #ifdef DEBUG
@@ -180,9 +203,6 @@ long getRandomSeed(int numBits = 31) {
   long result = 0;
   int tempBit = 0;
 
-#ifdef DEBUG
-  Serial.print(F("Entropy: 0x"));
-#endif
   pinMode(A0, INPUT_PULLUP);
   pinMode(A0, INPUT);
   delay(200);
@@ -206,6 +226,7 @@ long getRandomSeed(int numBits = 31) {
     result |= (long)(tempBit & 1) << bits;
   }
 #ifdef DEBUG
+  Serial.print(F("Entropy: 0x"));
   Serial.println(result, HEX);
 #endif
   return result;
@@ -257,7 +278,10 @@ void loop() {
     Serial.println();
 #endif
     // Transmit (specify band)
-    transmit(6);
+    transmit(selBands[idxBand]);
+    // Switch band
+    if (++idxBand >= sizeof(selBands) / sizeof(selBands[0]))
+      idxBand = 0;
   }
 #ifdef DEBUG
   if (nextTX > millis()) {
@@ -273,9 +297,9 @@ void loop() {
   for (unsigned long start = millis(); millis() - start < 1000;) {
     while (SoftSerial.available()) {
       char c = SoftSerial.read();
-#ifdef DEBUG
+#ifdef DEBUG_GPS
       // Print the GPS data
-      //Serial.write(c);
+      Serial.write(c);
 #endif
       // Did a new valid sentence came in?
       if (gps.encode(c))
@@ -287,7 +311,10 @@ void loop() {
     uint32_t age;
     uint16_t year;
     uint8_t month, day, hour, minute, second, hndrds;
-    Serial.print(F("GPS:"));
+    Serial.println();
+    Serial.print(F("GPS: "));
+    Serial.print(gps.satellites());
+    Serial.print(",");
     // Get the position
     gps.f_get_position(&lat, &lon, &age);
     // Check if the last location fix is valid
@@ -321,8 +348,8 @@ void loop() {
       sprintf(buf, "%02d:%02d:%02d,%ds", hour, minute, second, rem);
       Serial.println(buf);
       // Compute the next transmission window only if not already set
-      if (nextTX < 20000UL)
-        nextTX = millis() + rem * 1000UL;
+      if (nextTX == 0)
+        nextTX = millis() + (rem + 1) * 1000UL;
     }
   }
 }
