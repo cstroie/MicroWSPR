@@ -41,8 +41,6 @@
 #define CALIBRATION (0)
 #endif
 
-// EEPROM
-#include <EEPROM.h>
 #ifdef USE_AD9833
 // AD9833 and SPI
 #include <MD_AD9833.h>
@@ -85,7 +83,7 @@
 // 1599
 
 char call[10] = CALLSIGN;
-char loc[5]   = LOC;
+char loc[7]   = LOC;
 uint8_t dBm   = DBM;
 uint8_t txBuf[255];
 
@@ -115,12 +113,12 @@ const char VERSION[]  = "v0.6";
 const char AUTHOR[]   = "Costin Stroie <costinstroie@eridu.eu.org>";
 const char DATE[]     = __DATE__;
 
+#ifdef USE_AD9833
 // Pin definitions
 const int FSYNC     = 10;
 const int DATA      = 11;
 const int CLK       = 13;
 
-#ifdef USE_AD9833
 MD_AD9833  DDS(FSYNC);
 //MD_AD9833  DDS(DATA, CLK, FSYNC);
 #endif
@@ -301,7 +299,7 @@ void setup() {
   if (! DDS.init(SI5351_CRYSTAL_LOAD_8PF, 0, 0))
     Serial.println("Device not found on I2C bus!");
   // Callibration
-#ifdef CALIBRATION
+#if CALIBRATION != 0
   DDS.set_correction(CALIBRATION, SI5351_PLL_INPUT_XO);
   DDS.set_pll(SI5351_PLL_FIXED, SI5351_PLLA);
 #endif
