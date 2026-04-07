@@ -19,12 +19,7 @@
 
 #include <Arduino.h>
 
-// User settings
-// Should include at least the line
-// #define CALLSIGN "your-callsign"
-// #define DBM 27
-#include "config.h"
-// Safe values
+// Safe values (overridden by build_flags in platformio.ini)
 #ifndef CALLSIGN
 #define CALLSIGN    ("N0CALL")
 #endif
