@@ -24,7 +24,7 @@
 #define CALLSIGN    ("N0CALL")
 #endif
 #ifndef DBM
-#define DBM         (27)
+#define DBM         (10)
 #endif
 #ifndef LOC
 #define LOC         ("")
