@@ -1,7 +1,7 @@
 /**
   MicroWSPR - Arduino Micro GPS-discplined WSPR beacon
 
-  Copyright (C) 2021 Costin STROIE <costinstroie@eridu.eu.org>
+  Copyright (C) 2021-2026 Costin STROIE <costinstroie@eridu.eu.org>
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -52,7 +52,8 @@
 #include <TinyGPS.h>
 
 /*
-
+  Sample GPS data (from a real GPS receiver, not simulated):
+  
   $GPRMC,170852.00,V,,,,,,,040321,,,N*70
   $GPVTG,,,,,,,,,N*30
   $GPGGA,170852.00,,,,,0,00,99.99,,,,,,*6F
@@ -74,8 +75,6 @@
 
 */
 
-// 1623
-// 1599
 
 char call[10] = CALLSIGN;
 char loc[7]   = LOC;
@@ -104,7 +103,7 @@ uint8_t  decim   = DECIMATION;
 
 // Software name and vesion
 const char DEVNAME[]  = "MicroWSPR";
-const char VERSION[]  = "v0.6";
+const char VERSION[]  = "v1.0";
 const char AUTHOR[]   = "Costin Stroie <costinstroie@eridu.eu.org>";
 const char DATE[]     = __DATE__;
 
