@@ -35,6 +35,9 @@
 #ifndef DECIMATION
 #define DECIMATION  (5)
 #endif
+#ifndef CALIBRATION
+#define CALIBRATION (0)
+#endif
 
 // EEPROM
 #include <EEPROM.h>
@@ -96,16 +99,17 @@ enum HAM_BANDS {BAND_OFF, BAND_2190, BAND_630, BAND_160,
                 BAND_17, BAND_15, BAND_12, BAND_10, BAND_6, BAND_2
                };
 // Selected bands
-const uint8_t selBands[] = {BAND_40, BAND_30, BAND_80, BAND_160, BAND_60};
+const uint8_t selBands[] = {BAND_40, BAND_20, BAND_15};
 uint8_t idxBand = 0;
 
 // The next transmission window
-uint32_t nextTX = 0UL;
-uint8_t decim   = DECIMATION;
+uint32_t nextTX  = 0UL;
+uint8_t  countTX = 0;
+uint8_t  decim   = DECIMATION;
 
 // Software name and vesion
 const char DEVNAME[]  = "MicroWSPR";
-const char VERSION[]  = "v0.5";
+const char VERSION[]  = "v0.6";
 const char AUTHOR[]   = "Costin Stroie <costinstroie@eridu.eu.org>";
 const char DATE[]     = __DATE__;
 
@@ -153,6 +157,7 @@ void transmit(uint8_t band = 0) {
 #ifdef USE_SI5351
   // Turn on the output
   DDS.output_enable(SI5351_CLK2, 1);
+  digitalWrite(LED_BUILTIN, HIGH);
 #endif
   nextSym = millis();
   // Transmit the symbols
@@ -162,7 +167,7 @@ void transmit(uint8_t band = 0) {
     DDS.setFrequency(MD_AD9833::CHAN_0, wsprSymbFrq);
 #endif
 #ifdef USE_SI5351
-    DDS.set_freq(wsprSymbFrq * 100, SI5351_CLK0);
+    DDS.set_freq(wsprSymbFrq * 100, SI5351_CLK2);
 #endif
     nextSym += wsprToneDur;
 #ifdef DEBUG
@@ -179,7 +184,8 @@ void transmit(uint8_t band = 0) {
   DDS.setMode(MD_AD9833::MODE_OFF);
 #endif
 #ifdef USE_SI5351
-  DDS.output_enable(SI5351_CLK0, 0);
+  digitalWrite(LED_BUILTIN, LOW);
+  DDS.output_enable(SI5351_CLK2, 0);
 #endif
 }
 
@@ -271,6 +277,13 @@ void setup() {
   Serial.print(DEVNAME);
   Serial.print(" ");
   Serial.print(VERSION);
+  Serial.print(" ");
+#ifdef USE_AD9833
+  Serial.print("AD9833");
+#endif
+#ifdef USE_SI5351
+  Serial.print("SI5351");
+#endif
   Serial.print(" (");
   Serial.print(DATE);
   Serial.println(")");
@@ -283,11 +296,19 @@ void setup() {
 #endif
 #ifdef USE_SI5351
   // Initialize the Si5351
-  DDS.init(SI5351_CRYSTAL_LOAD_8PF, 0, 0);
+  if (! DDS.init(SI5351_CRYSTAL_LOAD_8PF, 0, 0))
+    Serial.println("Device not found on I2C bus!");
+  // Callibration
+#ifdef CALIBRATION
+  DDS.set_correction(CALIBRATION, SI5351_PLL_INPUT_XO);
+  DDS.set_pll(SI5351_PLL_FIXED, SI5351_PLLA);
+#endif
   // Set for max power if desired
   DDS.drive_strength(SI5351_CLK2, SI5351_DRIVE_8MA);
   // Disable the clock initially
   DDS.output_enable(SI5351_CLK2, 0);
+  // Use the builtin led to signal TX
+  pinMode(LED_BUILTIN, OUTPUT);
 #endif
 
   // Initialize the random seed
@@ -318,6 +339,8 @@ void loop() {
     // Switch band
     if (++idxBand >= sizeof(selBands) / sizeof(selBands[0]))
       idxBand = 0;
+    // Count the transmissions before resync
+    countTX++;
   }
 #ifdef DEBUG
   if (nextTX > millis()) {
@@ -325,8 +348,8 @@ void loop() {
     Serial.print(F("Next in "));
     Serial.print((nextTX - millis()) / 1000);
     Serial.println("s");
-#endif
   }
+#endif
 
   bool newData = false;
   // For one second we parse GPS data
@@ -384,8 +407,10 @@ void loop() {
       sprintf(buf, "%02d:%02d:%02d,%ds", hour, minute, second, rem);
       Serial.println(buf);
       // Compute the next transmission window only if not already set
-      if (nextTX == 0)
+      if (nextTX == 0 or countTX * decim >= 30) {
         nextTX = millis() + (rem + 1) * 1000UL;
+        countTX = 0;
+      }
     }
   }
 }
