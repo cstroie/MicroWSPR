@@ -43,6 +43,10 @@ uint8_t SI5351::recvRegister(uint8_t reg) {
 bool SI5351::init(uint8_t, uint32_t, int32_t) {
   Wire.begin();
   Wire.setClock(400000UL);
+  // Probe: device must ACK its address before we proceed
+  Wire.beginTransmission(SI5351_ADDR);
+  if (Wire.endTransmission() != 0)
+    return false;
   sendRegister(3, 0xFF);
   for (uint8_t i = 0; i < 6; i++) sendRegister(16 + i, 0x80);
   sendRegister(3, 0xFF);

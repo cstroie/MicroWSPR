@@ -41,6 +41,55 @@ enum HAM_BANDS {
   BAND_17,   BAND_15,   BAND_12,  BAND_10,  BAND_6,   BAND_2
 };
 
+// ── LED status ───────────────────────────────────────────────────────────────
+
+enum LedState {
+  LED_FAULT,     // fast blink 100/100 ms — hardware not detected
+  LED_NO_FIX,   // brief flash every 2 s — waiting for GPS fix
+  LED_TX,        // solid on — transmitting
+  LED_IDLE       // off — fix acquired, between transmissions
+};
+
+LedState ledState = LED_NO_FIX;
+
+/** Drive the LED according to ledState; call from loop() on every iteration. */
+void ledUpdate() {
+  static uint32_t lastToggle = 0;
+  static bool     ledOn      = false;
+  uint32_t now = millis();
+
+  switch (ledState) {
+    case LED_FAULT:
+      // 100 ms on / 100 ms off
+      if (now - lastToggle >= 100) {
+        ledOn = !ledOn;
+        digitalWrite(LED_BUILTIN, ledOn);
+        lastToggle = now;
+      }
+      break;
+    case LED_NO_FIX:
+      // 50 ms flash every 2 s
+      if (!ledOn && now - lastToggle >= 2000) {
+        digitalWrite(LED_BUILTIN, HIGH);
+        ledOn = true;
+        lastToggle = now;
+      } else if (ledOn && now - lastToggle >= 50) {
+        digitalWrite(LED_BUILTIN, LOW);
+        ledOn = false;
+        lastToggle = now;
+      }
+      break;
+    case LED_TX:
+      digitalWrite(LED_BUILTIN, HIGH);
+      ledOn = true;
+      break;
+    case LED_IDLE:
+      digitalWrite(LED_BUILTIN, LOW);
+      ledOn = false;
+      break;
+  }
+}
+
 // ── WSPR ─────────────────────────────────────────────────────────────────────
 
 // WSPR base frequencies indexed by HAM_BANDS enum (index 0 unused)
@@ -78,28 +127,21 @@ void transmit(uint8_t band = 0) {
   uint32_t nextSym;
   float wsprChanFrq = 1400 + (random(25) + 5) * (4.0 * 12000UL / 8192);
   float wsprSymbFrq;
-#ifdef DEBUG
-  Serial.print(F("Base frequency: "));
-  Serial.print(wsprChanFrq, 3);
-  Serial.print(F(" "));
-  Serial.println(wsprBaseFrq[band] + wsprChanFrq, 3);
-#endif
+  Serial.print(F("  freq: "));
+  Serial.print((wsprBaseFrq[band] + wsprChanFrq) / 1000.0, 3);
+  Serial.println(F(" kHz"));
+  ledState = LED_TX;
+  ledUpdate();
   DDS.outputEnable(2, 1);
-  digitalWrite(LED_BUILTIN, HIGH);
   nextSym = millis();
   for (uint8_t i = 0; i < WSPR_SYMBOL_COUNT; i++) {
     wsprSymbFrq = wsprBaseFrq[band] + wsprChanFrq + (txBuf[i] * wsprToneSep / 1000.0);
     DDS.setFreq(wsprSymbFrq * 100, 2);
     nextSym += wsprToneDur;
-#ifdef DEBUG
-    Serial.print(i); Serial.print(' ');
-    Serial.print(txBuf[i]); Serial.print(' ');
-    Serial.println(wsprSymbFrq, 3);
-#endif
     while (millis() < nextSym);
   }
-  digitalWrite(LED_BUILTIN, LOW);
   DDS.outputEnable(2, 0);
+  ledState = LED_IDLE;
 }
 
 // ── entropy ──────────────────────────────────────────────────────────────────
@@ -126,10 +168,8 @@ long getRandomSeed(int numBits = 31) {
     }
     result |= (long)(tempBit & 1) << bits;
   }
-#ifdef DEBUG
   Serial.print(F("Entropy: 0x"));
   Serial.println(result, HEX);
-#endif
   return result;
 }
 
@@ -137,7 +177,6 @@ long getRandomSeed(int numBits = 31) {
 /** Initialize Serial, GPS, Si5351, load config, and open the boot config window. */
 void setup() {
   Serial.begin(115200);
-  gpsInit();
 
   Serial.println();
   Serial.print(DEVNAME); Serial.print(' ');
@@ -145,13 +184,28 @@ void setup() {
   Serial.print(DATE);
   Serial.println(')');
 
-  DDS.init(8, 0, 0);
+  pinMode(LED_BUILTIN, OUTPUT);
+
+  Serial.print(F("GPS    : "));
+  if (gpsInit()) {
+    Serial.println(F("detected"));
+  } else {
+    Serial.println(F("no data!"));
+    ledState = LED_FAULT;
+  }
+
+  Serial.print(F("Si5351 : "));
+  if (DDS.init(8, 0, 0)) {
+    Serial.println(F("OK"));
+  } else {
+    Serial.println(F("not found!"));
+    ledState = LED_FAULT;
+  }
 #if CALIBRATION != 0
   DDS.setCorrection(CALIBRATION, 0);
 #endif
   DDS.driveStrength(2, 2);  // strength: 0=2mA, 1=4mA, 2=6mA, 3=8mA
   DDS.outputEnable(2, 0);
-  pinMode(LED_BUILTIN, OUTPUT);
 
   randomSeed(getRandomSeed());
 
@@ -163,6 +217,9 @@ void setup() {
 
   // Set to first enabled band
   advanceBand();
+
+  // Print config summary so the user knows what will be transmitted
+  configSummary();
 
   // Boot-time config window
   Serial.println(F("Press any key for configuration..."));
@@ -179,37 +236,42 @@ void setup() {
       break;
     }
   }
+
+  Serial.println(F("Waiting for GPS..."));
 }
 
 // ── loop ─────────────────────────────────────────────────────────────────────
 /** Check TX timing, read GPS, and schedule the next transmission window. */
 void loop() {
+  ledUpdate();
+
   if (loc[0] != '\0' && millis() >= nextTX && nextTX > 0) {
     nextTX += (uint32_t)cfg.decimation * 120 * 1000UL;
     memset(txBuf, 0, sizeof(txBuf));
     JT.wspr_encode(cfg.callsign, loc, cfg.dbm, txBuf);
-#ifdef DEBUG
-    Serial.print(F("Symbols: "));
-    for (uint8_t i = 0; i < WSPR_SYMBOL_COUNT; i++)
-      Serial.print(txBuf[i]);
-    Serial.println();
-#endif
-    if (curBand > 0)
+    if (curBand > 0) {
+      Serial.print(F("TX: "));
+      Serial.print(getBandName(curBand));
+      Serial.print(F(" ("));
+      Serial.print(wsprBaseFrq[curBand] / 1000.0, 1);
+      Serial.println(F(" kHz)"));
       transmit(curBand);
+      Serial.println(F("TX done."));
+    }
     advanceBand();
     countTX++;
   }
-#ifdef DEBUG
-  if (nextTX > millis()) {
-    Serial.print(F("Next in "));
-    Serial.print((nextTX - millis()) / 1000);
-    Serial.println('s');
-  }
-#endif
 
   int rem = gpsUpdate();
+  if (rem >= 0 && ledState == LED_NO_FIX)
+    ledState = LED_IDLE;
   if (rem >= 0 && (nextTX == 0 || countTX * cfg.decimation >= 30)) {
     nextTX  = millis() + (rem + 1) * 1000UL;
     countTX = 0;
+    Serial.print(F("Next TX: "));
+    Serial.print(getBandName(curBand));
+    Serial.print(F(" in "));
+    Serial.print(rem);
+    Serial.println('s');
   }
 }

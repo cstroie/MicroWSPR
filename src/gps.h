@@ -27,8 +27,8 @@ extern volatile GPRMCData gpsData;
 // Working locator: set from cfg.locator on boot, updated by GPS when cfg.locator is empty
 extern char loc[7];
 
-/** Initialize the GPS serial port. */
-void gpsInit();
+/** Initialize the GPS serial port; returns true if any data is received within 1 s. */
+bool gpsInit();
 /**
  * Poll GPS serial for up to 1 second and print a status line on new data.
  * Returns seconds to the next even 2-minute WSPR slot, or -1 if no valid time.

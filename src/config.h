@@ -30,6 +30,10 @@ struct Config {
 
 extern Config cfg;
 
+/** Return the name string for a HAM_BANDS index (0-14). */
+const char* getBandName(uint8_t band);
+/** Print a one-screen config summary (callsign, power, locator, bands, decimation). */
+void configSummary();
 /** Reset cfg to built-in defaults. */
 void configDefaults();
 /** Load cfg from EEPROM; writes defaults if the magic number is missing. */

@@ -176,6 +176,21 @@ static void editBands() {
 
 // ── public API ───────────────────────────────────────────────────────────────
 
+const char* getBandName(uint8_t band) {
+  if (band > 14) band = 0;
+  return bandName[band];
+}
+
+void configSummary() {
+  Serial.print(F("Callsign  : ")); Serial.println(cfg.callsign);
+  Serial.print(F("Power     : ")); Serial.print(cfg.dbm); Serial.println(F(" dBm"));
+  Serial.print(F("Locator   : "));
+  if (cfg.locator[0]) Serial.println(cfg.locator);
+  else                Serial.println(F("(from GPS)"));
+  Serial.print(F("Bands     : ")); printBands(); Serial.println();
+  Serial.print(F("Decimation: ")); Serial.println(cfg.decimation);
+}
+
 void configDefaults() {
   strncpy(cfg.callsign, "N0CALL", sizeof(cfg.callsign));
   cfg.locator[0] = '\0';

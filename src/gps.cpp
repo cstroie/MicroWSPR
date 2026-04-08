@@ -74,8 +74,12 @@ static bool parseGPRMC(char c) {
 
 // ── public API ───────────────────────────────────────────────────────────────
 
-void gpsInit() {
+bool gpsInit() {
   SoftSerial.begin(9600);
+  // Listen for 1 second; any byte received means the GPS module is alive
+  for (unsigned long start = millis(); millis() - start < 1000;)
+    if (SoftSerial.available()) return true;
+  return false;
 }
 
 int gpsUpdate() {
@@ -83,9 +87,6 @@ int gpsUpdate() {
   for (unsigned long start = millis(); millis() - start < 1000;) {
     while (SoftSerial.available()) {
       char c = SoftSerial.read();
-#ifdef DEBUG_GPS
-      Serial.write(c);
-#endif
       if (parseGPRMC(c))
         newData = true;
     }
@@ -94,41 +95,54 @@ int gpsUpdate() {
   if (!newData)
     return -1;
 
-  Serial.println();
-  Serial.print(F("GPS: "));
-  Serial.print('-');  // No satellite count in GPRMC
-  Serial.print(',');
+  static bool hadFix = false;
 
   float lat = 0.0, lon = 0.0;
-  if (gpsData.valid && gpsData.lat != 0 && gpsData.lon != 0) {
+  bool hasFix = gpsData.valid && gpsData.lat != 0 && gpsData.lon != 0;
+
+  if (hasFix) {
     lat = (float)(gpsData.lat / 1000000L) + (float)(gpsData.lat % 1000000L) / 600000.0f;
     if (gpsData.lat_ns == 'S') lat = -lat;
     lon = (float)(gpsData.lon / 1000000L) + (float)(gpsData.lon % 1000000L) / 600000.0f;
     if (gpsData.lon_ew == 'W') lon = -lon;
-    Serial.print(lat, 6); Serial.print(',');
-    Serial.print(lon, 6); Serial.print(',');
     if (!cfg.locator[0])
       getLocator(loc, lat, lon);
+    if (!hadFix) {
+      Serial.println(F("GPS fix acquired!"));
+      hadFix = true;
+    }
   } else {
-    Serial.print(F("*,*,"));
+    hadFix = false;
   }
 
-  if (loc[0]) { Serial.print(loc); Serial.print(','); }
-  else          Serial.print(F("*,"));
-
+  int rem = -1;
+  char timebuf[9] = "";  // "HH:MM:SS"
   if (gpsData.valid && gpsData.time > 0) {
     uint32_t t  = gpsData.time;
     uint8_t hour   = t / 10000;
     uint8_t minute = (t / 100) % 100;
     uint8_t second = t % 100;
-    uint8_t rem = ((minute % 2 == 0) ? 120 : 60) - second;
-    char buf[16];
-    sprintf(buf, "%02d:%02d:%02d,%ds", hour, minute, second, rem);
-    Serial.println(buf);
-    return (int)rem;
+    rem = (int)(((minute % 2 == 0) ? 120 : 60) - second);
+    sprintf(timebuf, "%02d:%02d:%02d", hour, minute, second);
   }
 
-  return -1;
+  if (hasFix) {
+    Serial.print(F("GPS: "));
+    Serial.print(lat, 6); Serial.print(','); Serial.print(lon, 6);
+    Serial.print(F("  ")); Serial.print(loc);
+    if (timebuf[0]) {
+      Serial.print(F("  ")); Serial.print(timebuf); Serial.print(F(" UTC"));
+      Serial.print(F("  next slot: ")); Serial.print(rem); Serial.print('s');
+    }
+  } else {
+    Serial.print(F("GPS: no fix"));
+    if (timebuf[0]) {
+      Serial.print(F("  ")); Serial.print(timebuf); Serial.print(F(" UTC"));
+    }
+  }
+  Serial.println();
+
+  return rem;
 }
 
 void getLocator(char *loc, float lat, float lng) {
