@@ -146,8 +146,6 @@ JTEncode JT;                        // JTEncode instance for wspr_encode()
 uint8_t  curBand = 0;
 // Absolute millis() timestamp for the next scheduled TX; 0 = not yet scheduled
 uint32_t nextTX  = 0UL;
-// Number of TX slots fired since the last GPS-disciplined resync
-uint8_t  countTX = 0;
 
 /**
  * Advance curBand to the next enabled band in cfg.bands, wrapping around.
@@ -371,36 +369,37 @@ void setup() {
  *
  *   1. ledUpdate() — maintain the non-blocking LED blink pattern.
  *
- *   2. TX gate — if a locator is available, nextTX is set, and the current
- *      time has passed nextTX, fire a transmission:
- *        - Advance nextTX by decimation × 120 s (next scheduled slot).
+ *   2. TX gate — if a locator is available, nextTX is set, and millis() has
+ *      reached nextTX, fire a transmission:
+ *        - Clear nextTX to 0 (rescheduled below from fresh GPS time).
  *        - Encode callsign / locator / power into txBuf via wspr_encode().
  *        - Call transmit() for the current band (~110 s blocking call).
- *        - Advance to the next enabled band and increment countTX.
+ *        - Advance to the next enabled band; set txFired flag.
  *
  *   3. gpsUpdate() — poll the GPS for 1 s; returns seconds to the next
  *      even-minute WSPR slot, or -1 if no valid time.
  *        - rem >= 0: GPS time is valid → restore LED_IDLE if it was LED_NO_FIX.
- *        - rem < 0:  GPS time lost → cancel nextTX, reset countTX, set
- *          LED_NO_FIX.  The "GPS time lost" message is printed only once
- *          (guarded by nextTX > 0).
+ *        - rem < 0:  GPS time lost → cancel nextTX, set LED_NO_FIX.  The
+ *          "GPS time lost" message is printed only once (guarded by nextTX > 0).
  *
  *   4. Locator auto-save — once per boot, if the GPS-derived loc[] differs
  *      from the stored cfg.locator, write it to EEPROM so future cold starts
  *      can transmit without waiting for a position fix.
  *
- *   5. TX scheduling — resync nextTX from GPS time when:
- *        - nextTX == 0 (no schedule yet, or just lost/regained GPS time), OR
- *        - countTX × decimation >= 30 (periodic resync every ~30 slots to
- *          prevent millis() drift from accumulating over long sessions).
- *      nextTX is set to millis() + (rem + 1) × 1000 ms, placing the TX start
- *      1 second after the slot boundary to account for GPS sentence latency.
+ *   5. TX scheduling — whenever nextTX == 0 and GPS time is available:
+ *        - Initial / after GPS recovery: nextTX = millis() + (rem+1) s.
+ *        - After a TX (txFired): nextTX = millis() + (rem+1) s
+ *          + (decimation-1) × 120 s, so the gap to the next TX is exactly
+ *          decimation × 120 s measured from the current slot boundary.
+ *      Scheduling always derives from fresh GPS time, so millis() drift is
+ *      corrected after every transmission — no separate resync counter needed.
  */
 void loop() {
   ledUpdate();
 
+  bool txFired = false;
   if (loc[0] != '\0' && millis() >= nextTX && nextTX > 0) {
-    nextTX += (uint32_t)cfg.decimation * 120 * 1000UL;
+    nextTX = 0;  // cleared here; rescheduled below from fresh GPS time
     memset(txBuf, 0, sizeof(txBuf));
     JT.wspr_encode(cfg.callsign, loc, cfg.dbm, txBuf);
     if (curBand > 0) {
@@ -413,7 +412,7 @@ void loop() {
       Serial.println(F("TX done."));
     }
     advanceBand();
-    countTX++;
+    txFired = true;
   }
 
   int rem = gpsUpdate();
@@ -425,7 +424,6 @@ void loop() {
     if (nextTX > 0) {
       Serial.println(F("GPS time lost, TX suspended."));
       nextTX = 0;
-      countTX = 0;
     }
     ledState = LED_NO_FIX;
   }
@@ -439,15 +437,17 @@ void loop() {
     locatorSaved = true;
   }
 
-  // Resync TX schedule from GPS time when there is no schedule or after
-  // enough slots have elapsed to correct any accumulated millis() drift
-  if (rem >= 0 && (nextTX == 0 || countTX * cfg.decimation >= 30)) {
-    nextTX  = millis() + (rem + 1) * 1000UL;
-    countTX = 0;
+  // Schedule next TX from GPS time whenever nextTX is unset (startup, after
+  // GPS loss recovery, or after a transmission).
+  // After a TX: skip (decimation-1) additional slots beyond the next boundary
+  // so the total gap is exactly decimation × 120 s, GPS-disciplined each time.
+  if (rem >= 0 && nextTX == 0) {
+    uint32_t skipMs = txFired ? (uint32_t)(cfg.decimation - 1) * 120 * 1000UL : 0UL;
+    nextTX = millis() + (rem + 1) * 1000UL + skipMs;
     Serial.print(F("Next TX: "));
     Serial.print(getBandName(curBand));
     Serial.print(F(" in "));
-    Serial.print(rem);
+    Serial.print(rem + 1 + (txFired ? (cfg.decimation - 1) * 120 : 0));
     Serial.println('s');
   }
 }
