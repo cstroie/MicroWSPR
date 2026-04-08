@@ -1,0 +1,5 @@
+# TODO
+
+- move CALIBRATION to eeprom
+- update README file
+- update functions documentation and complex code documentation in config.cpp / .h and main.cpp
