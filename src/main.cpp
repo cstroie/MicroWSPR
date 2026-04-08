@@ -27,7 +27,7 @@
 // ── constants ────────────────────────────────────────────────────────────────
 
 const char DEVNAME[] = "MicroWSPR";
-const char VERSION[] = "v1.0";
+const char VERSION[] = "v1.1";
 const char DATE[]    = __DATE__;
 
 /**
