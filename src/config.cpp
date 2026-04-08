@@ -24,8 +24,7 @@ static const char* const bandName[] = {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-// Read a line from Serial with echo and backspace support.
-// Returns number of chars read (not counting null terminator).
+/** Read a line from Serial with echo and backspace support; returns char count. */
 static uint8_t readLine(char *buf, uint8_t maxLen) {
   uint8_t i = 0;
   while (true) {
@@ -51,6 +50,7 @@ static uint8_t readLine(char *buf, uint8_t maxLen) {
   return i;
 }
 
+/** Print the enabled band names from cfg.bands, or "none". */
 static void printBands() {
   bool any = false;
   for (uint8_t b = 1; b <= 14; b++) {
@@ -63,6 +63,7 @@ static void printBands() {
   if (!any) Serial.print(F("none"));
 }
 
+/** Print the full configuration menu with current values. */
 static void showConfig() {
   Serial.println(F("\r\n================================"));
   Serial.println(F("   MicroWSPR  -  Configuration  "));
@@ -82,6 +83,7 @@ static void showConfig() {
 
 // ── field editors ────────────────────────────────────────────────────────────
 
+/** Prompt for a new callsign and update cfg.callsign. */
 static void editCallsign() {
   char buf[10];
   Serial.print(F("Callsign ["));
@@ -94,6 +96,7 @@ static void editCallsign() {
   }
 }
 
+/** Prompt for TX power in dBm (0-60) and update cfg.dbm. */
 static void editPower() {
   char buf[4];
   Serial.print(F("Power dBm (0-60) ["));
@@ -108,6 +111,7 @@ static void editPower() {
   }
 }
 
+/** Prompt for a 4- or 6-character Maidenhead locator, or empty to use GPS. */
 static void editLocator() {
   char buf[7];
   Serial.print(F("Locator (4 or 6 chars, empty = GPS) ["));
@@ -125,6 +129,7 @@ static void editLocator() {
   }
 }
 
+/** Prompt for TX decimation (1-99 TX intervals) and update cfg.decimation. */
 static void editDecimation() {
   char buf[4];
   Serial.print(F("Decimation 1-99 ["));
@@ -139,6 +144,7 @@ static void editDecimation() {
   }
 }
 
+/** Interactively toggle enabled bands in cfg.bands. */
 static void editBands() {
   Serial.println(F("\r\nAvailable bands:"));
   for (uint8_t b = 1; b <= 14; b++) {

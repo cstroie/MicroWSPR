@@ -29,25 +29,12 @@
 #include <Wire.h>
 
 /**
- * Minimal Si5351 driver for MicroWSPR
- * Based on uSDX implementation - uses Wire library for I2C
- * Optimized for WSPR tone generation on CLK2
+ * Minimal Si5351 driver: Integer-N PLL mode for WSPR tone generation on CLK2.
+ * Saves ~10 KB flash vs the full library by dropping fractional-N math.
  */
 #define SI5351_ADDR 0x60
 #define F_XTAL 25004000UL
 
-/**
- * Si5351 frequency synthesizer driver
- * 
- * Uses Integer-N PLL mode for WSPR tones which only need coarse frequency setting.
- * This avoids the heavy fractional-N math of the full library, saving ~10KB flash.
- * 
- * Key functions:
- *   init()       - Initialize I2C and disable all outputs
- *   set_freq()   - Set output frequency (fout in Hz)
- *   output_enable() - Enable/disable clock output
- *   set_correction() - Apply frequency correction (calibration)
- */
 class SI5351 {
 private:
   volatile int32_t _fout;
@@ -58,9 +45,7 @@ private:
   uint32_t fxtal;
   #define _MSC 0x80000
 
-  /**
-   * Write single byte to Si5351 register
-   */
+  /** Write a byte to a Si5351 register. */
   void SendRegister(uint8_t reg, uint8_t val) {
     Wire.beginTransmission(SI5351_ADDR);
     Wire.write(reg);
@@ -68,9 +53,7 @@ private:
     Wire.endTransmission();
   }
 
-  /**
-   * Write multiple bytes to Si5351 registers
-   */
+  /** Write n bytes to consecutive Si5351 registers starting at reg. */
   void SendRegisterBulk(uint8_t reg, uint8_t* data, uint8_t n) {
     Wire.beginTransmission(SI5351_ADDR);
     Wire.write(reg);
@@ -79,13 +62,7 @@ private:
   }
 
 public:
-  /**
-   * Initialize Si5351
-   * @param csLoad - Crystal load capacitance (8 = 8pF, ignored in this minimal driver)
-   * @param - ignored parameter for compatibility
-   * @param - ignored parameter for compatibility
-   * @return true (always succeeds in minimal driver)
-   */
+  /** Initialize Si5351: bring up I2C at 400 kHz and disable all outputs. */
   bool init(uint8_t, uint32_t, int32_t) {
     Wire.begin();
     Wire.setClock(400000UL);
@@ -95,23 +72,14 @@ public:
     return true;
   }
 
-  /**
-   * Set frequency correction (calibration offset)
-   * @param corr - Correction value in Hz (subtracted from nominal crystal frequency)
-   * @param - ignored parameter for compatibility
-   */
+  /** Apply frequency correction; corr (Hz) is subtracted from the crystal frequency. */
   void set_correction(int32_t corr, uint8_t) {
     fxtal = F_XTAL - corr;
   }
 
   /**
-   * Set output frequency
-   * @param fout - Desired output frequency in Hz
-   * @param clk - Clock output (0, 1, or 2) - only CLK2 used for WSPR
-   * 
-   * Uses integer-N PLL mode for simplicity. For WSPR tones this provides
-   * adequate precision. The frequency is first divided to stay within
-   * the PLL's usable range, then multiplied back up.
+   * Set output frequency on clk (0-2); only CLK2 is used for WSPR.
+   * Integer-N PLL mode gives adequate precision for WSPR tones with minimal code.
    */
   void set_freq(uint32_t fout, uint8_t clk) {
     uint8_t rdiv = 0;
@@ -143,29 +111,19 @@ public:
     _fout = fout; _div = d; _msa128min512 = msa * 128 - 512; _msb128 = msb;
   }
 
-  /**
-   * Enable or disable clock output
-   * @param clk - Clock output (0, 1, or 2)
-   * @param enable - 1 to enable, 0 to disable
-   */
+  /** Enable (1) or disable (0) clock output clk (0-2). */
   void output_enable(uint8_t clk, uint8_t enable) {
     if (enable) SendRegister(3, ~(1 << clk));  // clear bit → enable output
     else        SendRegister(3, 0xFF);          // all bits set → all disabled
   }
 
-  /**
-   * Set drive strength
-   * @param clk - Clock output (0, 1, or 2)
-   * @param strength - Drive strength (0=2mA, 1=4mA, 2=6mA, 3=8mA)
-   */
+  /** Set drive strength for clk (0-2): 0=2mA, 1=4mA, 2=6mA, 3=8mA. */
   void drive_strength(uint8_t clk, uint8_t strength) {
     uint8_t val = RecvRegister(16 + clk);
     SendRegister(16 + clk, (val & 0xF9) | (strength << 1));
   }
 
-  /**
-   * Read single byte from Si5351 register
-   */
+  /** Read a byte from a Si5351 register. */
   uint8_t RecvRegister(uint8_t reg) {
     Wire.beginTransmission(SI5351_ADDR);
     Wire.write(reg);
@@ -211,10 +169,7 @@ const char DATE[]    = __DATE__;
 JTEncode JT;
 SoftwareSerial SoftSerial(3, 4);
 
-/**
- * GPS RMC sentence data structure
- * Minimal storage for $GPRMC NMEA sentences (no satellite count)
- */
+/** Parsed fields from a $GPRMC NMEA sentence. */
 struct GPRMCData {
   uint32_t time;       // HHMMSS as 6-digit integer (HH*10000 + MM*100 + SS)
   uint32_t date;       // DDMMYY
@@ -228,11 +183,8 @@ struct GPRMCData {
 volatile GPRMCData gpsData = {0, 0, 0, 0, 'N', 'E', false};
 
 /**
- * Parse single character from GPS NMEA stream
- * Extracts time, validity, lat/lon from $GPRMC sentences.
- * Uses comma-field counting; all variable data is accumulated into `acc`
- * and committed to gpsData on each ',' separator.
- * @return true when a complete sentence with all needed fields is parsed
+ * Feed one character from the GPS NMEA stream into the $GPRMC parser.
+ * Accumulates fields into gpsData; returns true when a complete sentence is parsed.
  */
 bool parseGPRMC(char c) {
   static uint8_t field  = 0xFF;  // 0xFF = waiting for '$'
@@ -282,10 +234,7 @@ bool parseGPRMC(char c) {
 
 // ── band cycling ─────────────────────────────────────────────────────────────
 
-/**
- * Advance to next enabled band
- * Cycles through cfg.bands bitmask, wrapping around. Sets curBand to 0 if no bands enabled.
- */
+/** Advance curBand to the next enabled band in cfg.bands, wrapping around. */
 void advanceBand() {
   if (!cfg.bands) { curBand = 0; return; }
   for (int i = 1; i <= 14; i++) {
@@ -297,11 +246,7 @@ void advanceBand() {
 
 // ── transmit ─────────────────────────────────────────────────────────────────
 
-/**
- * Transmit WSPR symbols on specified band
- * Encodes message and transmits at random frequency within WSPR channel
- * @param band - HAM_BANDS value (1-14), 0 = no transmission
- */
+/** Transmit encoded WSPR symbols on band (1-14) at a random offset within the WSPR channel. */
 void transmit(uint8_t band = 0) {
   uint32_t nextSym;
   float wsprChanFrq = 1400 + (random(25) + 5) * (4.0 * 12000UL / 8192);
@@ -331,7 +276,8 @@ void transmit(uint8_t band = 0) {
 }
 
 // ── GPS helpers ───────────────────────────────────────────────────────────────
-// Convert lat/lon to Maidenhead locator (4-character grid square)
+
+/** Compute a 4-character Maidenhead locator from decimal lat/lon into loc[5]. */
 void getLocator(char *loc, float lat, float lng) {
   float rem;
   rem = lng + 180.0;
@@ -349,7 +295,7 @@ void getLocator(char *loc, float lat, float lng) {
   loc[4] = '\0';
 }
 
-// Generate entropy from floating analog input for randomSeed()
+/** Sample analog noise on A0 to produce numBits bits of entropy for randomSeed(). */
 long getRandomSeed(int numBits = 31) {
   if (numBits > 31 || numBits < 1) numBits = 31;
   const int  baseIntervalMs    = 1;
@@ -379,7 +325,7 @@ long getRandomSeed(int numBits = 31) {
 }
 
 // ── setup ────────────────────────────────────────────────────────────────────
-// Initialize Serial, GPS, Si5351, load config, start scheduler
+/** Initialize Serial, GPS, Si5351, load config, and open the boot config window. */
 void setup() {
   Serial.begin(115200);
   SoftSerial.begin(9600);
@@ -427,7 +373,7 @@ void setup() {
 }
 
 // ── loop ─────────────────────────────────────────────────────────────────────
-// Main scheduler: check TX timing, read GPS, schedule transmissions
+/** Check TX timing, read GPS, and schedule the next transmission window. */
 void loop() {
   if (loc[0] != '\0' && millis() >= nextTX && nextTX > 0) {
     nextTX += (uint32_t)cfg.decimation * 120 * 1000UL;

@@ -30,7 +30,11 @@ struct Config {
 
 extern Config cfg;
 
+/** Reset cfg to built-in defaults. */
 void configDefaults();
+/** Load cfg from EEPROM; writes defaults if the magic number is missing. */
 void configLoad();
+/** Write cfg and magic number to EEPROM. */
 void configSave();
+/** Run the interactive serial configuration menu. */
 void configTUI();
