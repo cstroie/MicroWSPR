@@ -134,18 +134,12 @@ public:
       (uint8_t)(msp2 >> 8),
       (uint8_t)(msp2)
     };
-    SendRegisterBulk(26, pll_regs, 8);
-    SendRegisterBulk(26 + 8, pll_regs, 8);
+    SendRegisterBulk(34, pll_regs, 8);  // PLLB only (CLK2 uses PLLB per reg 18)
     msp1 = (128 * msa - 512) | (((uint32_t)rdiv) << 20);
     uint8_t ms_regs[8] = {0, 1, (uint8_t)(msp1 >> 16), (uint8_t)(msp1 >> 8), (uint8_t)(msp1), 0, 0, 0};
-    SendRegisterBulk(42, ms_regs, 8);
-    SendRegisterBulk(42 + 8, ms_regs, 8);
-    SendRegisterBulk(42 + 16, ms_regs, 8);
-    SendRegister(16, 0x4C);
-    SendRegister(17, 0x4C);
-    SendRegister(18, 0x6C);
+    SendRegisterBulk(58, ms_regs, 8);   // MS2 only (42+16, CLK2)
+    SendRegister(18, 0x6C);             // CLK2: PLLB, integer mode, inverted, 6mA
     if (iqmsa != msa) { iqmsa = msa; SendRegister(177, 0xA0); }
-    SendRegister(3, 0xFC);
     _fout = fout; _div = d; _msa128min512 = msa * 128 - 512; _msb128 = msb;
   }
 
@@ -155,9 +149,8 @@ public:
    * @param enable - 1 to enable, 0 to disable
    */
   void output_enable(uint8_t clk, uint8_t enable) {
-    uint8_t mask = ~(1 << clk);
-    if (enable) SendRegister(3, 0xFF);
-    else SendRegister(3, mask);
+    if (enable) SendRegister(3, ~(1 << clk));  // clear bit → enable output
+    else        SendRegister(3, 0xFF);          // all bits set → all disabled
   }
 
   /**
@@ -184,7 +177,7 @@ public:
 
 SI5351 DDS;
 
-uint8_t txBuf[255];
+uint8_t txBuf[WSPR_SYMBOL_COUNT];
 
 const uint16_t wsprToneSep = round(1000UL * 12000 / 8192);  // 1.4648 Hz (stored as mHz)
 const uint16_t wsprToneDur = round(1000UL * 8192 / 12000);  // 683 ms
@@ -223,10 +216,10 @@ SoftwareSerial SoftSerial(3, 4);
  * Minimal storage for $GPRMC NMEA sentences (no satellite count)
  */
 struct GPRMCData {
-  uint32_t time;       // HHMMSSss (hhmmss.ss * 100)
+  uint32_t time;       // HHMMSS as 6-digit integer (HH*10000 + MM*100 + SS)
   uint32_t date;       // DDMMYY
-  long lat;            // Latitude in minutes * 10000 (1e-4 arc minutes)
-  long lon;            // Longitude in minutes * 10000
+  long lat;            // Raw DDMM.MMMM digits (decimal stripped); to degrees: (lat/1000000) + (lat%1000000)/600000.0
+  long lon;            // Raw DDDMM.MMMM digits; same conversion
   char lat_ns;         // N or S
   char lon_ew;         // E or W
   bool valid;          // A = valid fix, V = invalid
@@ -236,70 +229,54 @@ volatile GPRMCData gpsData = {0, 0, 0, 0, 'N', 'E', false};
 
 /**
  * Parse single character from GPS NMEA stream
- * Extracts time, date, lat/lon from $GPRMC sentences
- * @return true when a complete valid sentence is parsed
+ * Extracts time, validity, lat/lon from $GPRMC sentences.
+ * Uses comma-field counting; all variable data is accumulated into `acc`
+ * and committed to gpsData on each ',' separator.
+ * @return true when a complete sentence with all needed fields is parsed
  */
 bool parseGPRMC(char c) {
-  static uint8_t state = 0;
-  static long value = 0;
-  static uint8_t digitCount = 0;
-  
-  if (c == '$') {
-    state = 0;
-    value = 0;
-    digitCount = 0;
+  static uint8_t field  = 0xFF;  // 0xFF = waiting for '$'
+  static uint8_t pos    = 0;     // position within current field
+  static uint8_t hdrIdx = 0;     // index into "GPRMC" header
+  static long    acc    = 0;     // digit accumulator
+
+  if (c == '$') { field = 0; pos = 0; hdrIdx = 0; acc = 0; return false; }
+  if (field == 0xFF) return false;
+  if (c == '\r' || c == '\n' || c == '*') { field = 0xFF; return false; }
+
+  if (c == ',') {
+    switch (field) {
+      case 1: gpsData.time = acc; break;   // HHMMSS
+      case 3: gpsData.lat  = acc; break;   // DDMMmmmm
+      case 5: gpsData.lon  = acc; break;   // DDDMMmmmm
+    }
+    field++; pos = 0; acc = 0;
     return false;
   }
-  
-  static const char fmt[] = "$GPRMC,ddddd.dd?,A,lllnn.nnnn?,ooooo.ooooo?,???";
-  if (state >= sizeof(fmt) - 1) return false;
-  
-  char expected = fmt[state++];
-  
-  if (expected == '?' || expected == c) {
-    if (expected == '?' || (c >= '0' && c <= '9')) {
-    } else {
-      state = 0;
-      return false;
+
+  switch (field) {
+    case 0: {  // verify "GPRMC" header
+      static const char hdr[] = "GPRMC";
+      if (hdrIdx < 5 && c != hdr[hdrIdx++]) field = 0xFF;
+      break;
     }
-  } else {
-    state = 0;
-    return false;
+    case 1:  // time: HHMMSS.ss — accumulate first 6 integer digits only
+      if (c != '.' && pos < 6 && c >= '0' && c <= '9') { acc = acc * 10 + (c - '0'); pos++; }
+      break;
+    case 2:  // validity: A or V
+      if (pos == 0) { gpsData.valid = (c == 'A'); pos++; }
+      break;
+    case 3:  // lat: DDMM.MMMM — accumulate all digits, skip decimal point
+    case 5:  // lon: DDDMM.MMMM
+      if (c != '.' && c >= '0' && c <= '9') acc = acc * 10 + (c - '0');
+      break;
+    case 4:  // N or S
+      if (pos == 0) { gpsData.lat_ns = c; pos++; }
+      break;
+    case 6:  // E or W — last field needed; signal completion
+      if (pos == 0) { gpsData.lon_ew = c; return true; }
+      break;
   }
-  
-  uint8_t s = state - 1;
-  
-  if (s >= 1 && s <= 6) { // time: HHMMSS
-    if (c >= '0' && c <= '9') {
-      value = value * 10 + (c - '0');
-      digitCount++;
-      if (digitCount == 6) gpsData.time = value;
-    }
-  } else if (s == 7) { // decimal tenths
-    if (c >= '0' && c <= '9') {
-      gpsData.time = gpsData.time * 10 + (c - '0');
-    }
-  } else if (s == 9) { // validity
-    gpsData.valid = (c == 'A');
-  } else if (s >= 10 && s <= 17) { // latitude
-    if (c >= '0' && c <= '9') {
-      value = value * 10 + (c - '0');
-    }
-  } else if (s == 18) {
-    gpsData.lat = value;
-    gpsData.lat_ns = c;
-    value = 0;
-  } else if (s >= 19 && s <= 27) { // longitude
-    if (c >= '0' && c <= '9') {
-      value = value * 10 + (c - '0');
-    }
-  } else if (s == 28) {
-    gpsData.lon = value;
-    gpsData.lon_ew = c;
-    value = 0;
-    return true;
-  }
-  
   return false;
 }
 
@@ -417,7 +394,7 @@ void setup() {
 #if CALIBRATION != 0
   DDS.set_correction(CALIBRATION, 0);
 #endif
-  DDS.drive_strength(2, 2);  // 2 = 8mA
+  DDS.drive_strength(2, 2);  // strength: 0=2mA, 1=4mA, 2=6mA, 3=8mA
   DDS.output_enable(2, 0);
   pinMode(LED_BUILTIN, OUTPUT);
 
@@ -495,9 +472,9 @@ void loop() {
     
     float lat = 0.0, lon = 0.0;
     if (gpsData.valid && gpsData.lat != 0 && gpsData.lon != 0) {
-      lat = gpsData.lat / 600000.0;
+      lat = (float)(gpsData.lat / 1000000L) + (float)(gpsData.lat % 1000000L) / 600000.0f;
       if (gpsData.lat_ns == 'S') lat = -lat;
-      lon = gpsData.lon / 600000.0;
+      lon = (float)(gpsData.lon / 1000000L) + (float)(gpsData.lon % 1000000L) / 600000.0f;
       if (gpsData.lon_ew == 'W') lon = -lon;
       Serial.print(lat, 6); Serial.print(',');
       Serial.print(lon, 6); Serial.print(',');
@@ -511,9 +488,9 @@ void loop() {
 
     if (gpsData.valid && gpsData.time > 0) {
       uint32_t t = gpsData.time;
-      uint8_t hour = t / 1000000;
-      uint8_t minute = (t / 10000) % 100;
-      uint8_t second = (t / 100) % 100;
+      uint8_t hour   = t / 10000;
+      uint8_t minute = (t / 100) % 100;
+      uint8_t second = t % 100;
       uint8_t rem = ((minute % 2 == 0) ? 120 : 60) - second;
       char buf[16];
       sprintf(buf, "%02d:%02d:%02d,%ds", hour, minute, second, rem);

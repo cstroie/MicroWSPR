@@ -217,6 +217,4 @@ void configTUI() {
       default:  Serial.println(F("Unknown option.")); break;
     }
   }
-
-  Serial.setTimeout(1000);
 }
