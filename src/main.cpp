@@ -28,6 +28,21 @@
 #include <SoftwareSerial.h>
 #include <Wire.h>
 
+// ── constants ────────────────────────────────────────────────────────────────
+
+const char DEVNAME[] = "MicroWSPR";
+const char VERSION[] = "v1.0";
+const char DATE[]    = __DATE__;
+
+enum HAM_BANDS {
+  BAND_OFF,
+  BAND_2190, BAND_630,  BAND_160,
+  BAND_80,   BAND_60,   BAND_40,  BAND_30,  BAND_20,
+  BAND_17,   BAND_15,   BAND_12,  BAND_10,  BAND_6,   BAND_2
+};
+
+// ── Si5351 ───────────────────────────────────────────────────────────────────
+
 /**
  * Minimal Si5351 driver: Integer-N PLL mode for WSPR tone generation on CLK2.
  * Saves ~10 KB flash vs the full library by dropping fractional-N math.
@@ -135,10 +150,9 @@ public:
 
 SI5351 DDS;
 
-uint8_t txBuf[WSPR_SYMBOL_COUNT];
+// ── WSPR ─────────────────────────────────────────────────────────────────────
 
-const uint16_t wsprToneSep = round(1000UL * 12000 / 8192);  // 1.4648 Hz (stored as mHz)
-const uint16_t wsprToneDur = round(1000UL * 8192 / 12000);  // 683 ms
+// WSPR base frequencies indexed by HAM_BANDS enum (index 0 unused)
 const uint32_t wsprBaseFrq[] = {
   0UL,
   136000UL,   474200UL,   1836600UL,  3568600UL,
@@ -146,28 +160,58 @@ const uint32_t wsprBaseFrq[] = {
   21094600UL, 24924600UL, 28124600UL, 50293000UL, 144489000UL
 };
 
-enum HAM_BANDS {
-  BAND_OFF,
-  BAND_2190, BAND_630,  BAND_160,
-  BAND_80,   BAND_60,   BAND_40,  BAND_30,  BAND_20,
-  BAND_17,   BAND_15,   BAND_12,  BAND_10,  BAND_6,   BAND_2
-};
+const uint16_t wsprToneSep = round(1000UL * 12000 / 8192);  // 1.4648 Hz (stored as mHz)
+const uint16_t wsprToneDur = round(1000UL * 8192 / 12000);  // 683 ms per symbol
 
-// Working locator: set from cfg.locator on boot, updated by GPS when cfg.locator is empty
-char     loc[7];
-// Current band (HAM_BANDS value, 1-14); 0 = no band enabled
-uint8_t  curBand  = 0;
-
-// Transmission scheduling
-uint32_t nextTX   = 0UL;
-uint8_t  countTX  = 0;
-
-const char DEVNAME[] = "MicroWSPR";
-const char VERSION[] = "v1.0";
-const char DATE[]    = __DATE__;
-
+uint8_t  txBuf[WSPR_SYMBOL_COUNT];
 JTEncode JT;
-SoftwareSerial SoftSerial(3, 4);
+
+// Current band (HAM_BANDS index, 1-14); 0 = no band enabled
+uint8_t  curBand = 0;
+// Transmission scheduling
+uint32_t nextTX  = 0UL;
+uint8_t  countTX = 0;
+
+/** Advance curBand to the next enabled band in cfg.bands, wrapping around. */
+void advanceBand() {
+  if (!cfg.bands) { curBand = 0; return; }
+  for (int i = 1; i <= 14; i++) {
+    uint8_t b = (curBand - 1 + i) % 14 + 1;
+    if (cfg.bands & (1 << b)) { curBand = b; return; }
+  }
+  curBand = 0;
+}
+
+/** Transmit encoded WSPR symbols on band (1-14) at a random offset within the WSPR channel. */
+void transmit(uint8_t band = 0) {
+  uint32_t nextSym;
+  float wsprChanFrq = 1400 + (random(25) + 5) * (4.0 * 12000UL / 8192);
+  float wsprSymbFrq;
+#ifdef DEBUG
+  Serial.print(F("Base frequency: "));
+  Serial.print(wsprChanFrq, 3);
+  Serial.print(F(" "));
+  Serial.println(wsprBaseFrq[band] + wsprChanFrq, 3);
+#endif
+  DDS.output_enable(2, 1);
+  digitalWrite(LED_BUILTIN, HIGH);
+  nextSym = millis();
+  for (uint8_t i = 0; i < WSPR_SYMBOL_COUNT; i++) {
+    wsprSymbFrq = wsprBaseFrq[band] + wsprChanFrq + (txBuf[i] * wsprToneSep / 1000.0);
+    DDS.set_freq(wsprSymbFrq * 100, 2);
+    nextSym += wsprToneDur;
+#ifdef DEBUG
+    Serial.print(i); Serial.print(' ');
+    Serial.print(txBuf[i]); Serial.print(' ');
+    Serial.println(wsprSymbFrq, 3);
+#endif
+    while (millis() < nextSym);
+  }
+  digitalWrite(LED_BUILTIN, LOW);
+  DDS.output_enable(2, 0);
+}
+
+// ── GPS ──────────────────────────────────────────────────────────────────────
 
 /** Parsed fields from a $GPRMC NMEA sentence. */
 struct GPRMCData {
@@ -181,6 +225,11 @@ struct GPRMCData {
 };
 
 volatile GPRMCData gpsData = {0, 0, 0, 0, 'N', 'E', false};
+
+// Working locator: set from cfg.locator on boot, updated by GPS when cfg.locator is empty
+char loc[7];
+
+SoftwareSerial SoftSerial(3, 4);
 
 /**
  * Feed one character from the GPS NMEA stream into the $GPRMC parser.
@@ -231,51 +280,6 @@ bool parseGPRMC(char c) {
   }
   return false;
 }
-
-// ── band cycling ─────────────────────────────────────────────────────────────
-
-/** Advance curBand to the next enabled band in cfg.bands, wrapping around. */
-void advanceBand() {
-  if (!cfg.bands) { curBand = 0; return; }
-  for (int i = 1; i <= 14; i++) {
-    uint8_t b = (curBand - 1 + i) % 14 + 1;
-    if (cfg.bands & (1 << b)) { curBand = b; return; }
-  }
-  curBand = 0;
-}
-
-// ── transmit ─────────────────────────────────────────────────────────────────
-
-/** Transmit encoded WSPR symbols on band (1-14) at a random offset within the WSPR channel. */
-void transmit(uint8_t band = 0) {
-  uint32_t nextSym;
-  float wsprChanFrq = 1400 + (random(25) + 5) * (4.0 * 12000UL / 8192);
-  float wsprSymbFrq;
-#ifdef DEBUG
-  Serial.print(F("Base frequency: "));
-  Serial.print(wsprChanFrq, 3);
-  Serial.print(F(" "));
-  Serial.println(wsprBaseFrq[band] + wsprChanFrq, 3);
-#endif
-  DDS.output_enable(2, 1);
-  digitalWrite(LED_BUILTIN, HIGH);
-  nextSym = millis();
-  for (uint8_t i = 0; i < WSPR_SYMBOL_COUNT; i++) {
-    wsprSymbFrq = wsprBaseFrq[band] + wsprChanFrq + (txBuf[i] * wsprToneSep / 1000.0);
-    DDS.set_freq(wsprSymbFrq * 100, 2);
-    nextSym += wsprToneDur;
-#ifdef DEBUG
-    Serial.print(i); Serial.print(' ');
-    Serial.print(txBuf[i]); Serial.print(' ');
-    Serial.println(wsprSymbFrq, 3);
-#endif
-    while (millis() < nextSym);
-  }
-  digitalWrite(LED_BUILTIN, LOW);
-  DDS.output_enable(2, 0);
-}
-
-// ── GPS helpers ───────────────────────────────────────────────────────────────
 
 /** Compute a 4-character Maidenhead locator from decimal lat/lon into loc[5]. */
 void getLocator(char *loc, float lat, float lng) {
@@ -415,7 +419,7 @@ void loop() {
     Serial.print(F("GPS: "));
     Serial.print('-');  // No satellite count in GPRMC
     Serial.print(',');
-    
+
     float lat = 0.0, lon = 0.0;
     if (gpsData.valid && gpsData.lat != 0 && gpsData.lon != 0) {
       lat = (float)(gpsData.lat / 1000000L) + (float)(gpsData.lat % 1000000L) / 600000.0f;
