@@ -45,7 +45,7 @@ enum HAM_BANDS {
 
 enum LedState {
   LED_FAULT,     // fast blink 100/100 ms — hardware not detected
-  LED_NO_FIX,   // brief flash every 2 s — waiting for GPS fix
+  LED_NO_FIX,    // brief flash every 2 s — waiting for GPS fix
   LED_TX,        // solid on — transmitting
   LED_IDLE       // off — fix acquired, between transmissions
 };
@@ -187,7 +187,8 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
 
   Serial.print(F("GPS    : "));
-  if (gpsInit()) {
+  bool gpsDetected = gpsInit();
+  if (gpsDetected) {
     Serial.println(F("detected"));
   } else {
     Serial.println(F("no data!"));
@@ -221,20 +222,35 @@ void setup() {
   // Print config summary so the user knows what will be transmitted
   configSummary();
 
-  // Boot-time config window
+  // Boot-time config window (optional, 5-second window)
   Serial.println(F("Press any key for configuration..."));
   uint32_t deadline = millis() + 5000UL;
   while (millis() < deadline) {
     if (Serial.available()) {
       while (Serial.available()) Serial.read();
       configTUI();
-      // Re-apply locator and band after config change
       strncpy(loc, cfg.locator, sizeof(loc));
-      curBand = 0;
-      advanceBand();
-      nextTX = 0;
+      curBand = 0; advanceBand(); nextTX = 0;
       break;
     }
+  }
+
+  // Require a real callsign — loop until one is set
+  while (cfg.callsign[0] == '\0' || strcmp(cfg.callsign, "N0CALL") == 0) {
+    Serial.println(F("Callsign not set. Please configure."));
+    configTUI();
+    strncpy(loc, cfg.locator, sizeof(loc));
+    curBand = 0; advanceBand(); nextTX = 0;
+  }
+
+  // Require a locator when GPS is unavailable — loop until one is set
+  if (!gpsDetected && cfg.locator[0] == '\0') {
+    Serial.println(F("No GPS detected and no locator set. Please configure."));
+    while (cfg.locator[0] == '\0') {
+      configTUI();
+      strncpy(loc, cfg.locator, sizeof(loc));
+    }
+    curBand = 0; advanceBand(); nextTX = 0;
   }
 
   Serial.println(F("Waiting for GPS..."));
@@ -265,6 +281,15 @@ void loop() {
   int rem = gpsUpdate();
   if (rem >= 0 && ledState == LED_NO_FIX)
     ledState = LED_IDLE;
+
+  // Auto-save GPS-derived locator once per boot if it differs from stored value
+  static bool locatorSaved = false;
+  if (!locatorSaved && loc[0] != '\0' && strcmp(loc, cfg.locator) != 0) {
+    strncpy(cfg.locator, loc, sizeof(cfg.locator));
+    Serial.print(F("Locator auto-saved: ")); Serial.println(cfg.locator);
+    configSave();
+    locatorSaved = true;
+  }
   if (rem >= 0 && (nextTX == 0 || countTX * cfg.decimation >= 30)) {
     nextTX  = millis() + (rem + 1) * 1000UL;
     countTX = 0;

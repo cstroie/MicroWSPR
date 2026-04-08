@@ -207,6 +207,11 @@ void configLoad() {
     configSave();
   } else {
     EEPROM.get(CONFIG_ADDR, cfg);
+    // Guard against junk data from a struct layout change or flash corruption
+    cfg.callsign[sizeof(cfg.callsign) - 1] = '\0';
+    cfg.locator[sizeof(cfg.locator) - 1]   = '\0';
+    if (cfg.decimation == 0)  cfg.decimation = 1;
+    if (cfg.dbm > 60)         cfg.dbm = 10;
   }
 }
 
