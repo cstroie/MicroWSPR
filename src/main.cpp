@@ -262,17 +262,19 @@ long getRandomSeed(int numBits = 31) {
  *   5. Load configuration from EEPROM (writes defaults on first boot).
  *   6. Apply cfg.calibration and cfg.clkOutput to the Si5351 now that cfg is
  *      populated; configure drive strength and disable output until TX time.
- *   7. Copy cfg.locator into the working loc[] buffer used by gpsUpdate()
+ *   7. Initialise GPS SoftwareSerial on cfg.gpsRxPin/cfg.gpsTxPin; set
+ *      LED_FAULT if no data received within 1 s.
+ *   8. Copy cfg.locator into the working loc[] buffer used by gpsUpdate()
  *      and transmit(); GPS will overwrite this when a fix is obtained and
  *      cfg.locator is empty.
- *   8. Select the first enabled band.
- *   9. Print a config summary.
- *  10. Open a 5-second boot-time config window; any serial keypress launches
+ *   9. Select the first enabled band.
+ *  10. Print a config summary.
+ *  11. Open a 5-second boot-time config window; any serial keypress launches
  *      the interactive TUI.
- *  11. Enforce a valid callsign — loop in the TUI until one is set.
- *  12. If GPS is absent and no locator is stored, loop in the TUI until a
+ *  12. Enforce a valid callsign — loop in the TUI until one is set.
+ *  13. If GPS is absent and no locator is stored, loop in the TUI until a
  *      locator is entered (without a position there is nothing to transmit).
- *  13. Print the appropriate "Waiting for GPS…" message and return.
+ *  14. Print the appropriate "Waiting for GPS…" message and return.
  */
 void setup() {
   Serial.begin(115200);
@@ -284,15 +286,6 @@ void setup() {
   Serial.println(')');
 
   pinMode(LED_BUILTIN, OUTPUT);
-
-  Serial.print(F("GPS    : "));
-  bool gpsDetected = gpsInit();
-  if (gpsDetected) {
-    Serial.println(F("detected"));
-  } else {
-    Serial.println(F("no data!"));
-    ledState = LED_FAULT;
-  }
 
   Serial.print(F("Si5351 : "));
   if (DDS.init(8, 0, 0)) {
@@ -311,6 +304,16 @@ void setup() {
     DDS.setCorrection(cfg.calibration, 0);
   DDS.driveStrength(cfg.clkOutput, 2);  // strength: 0=2mA, 1=4mA, 2=6mA, 3=8mA
   DDS.outputEnable(cfg.clkOutput, 0);
+
+  // Initialise GPS on the configured pins now that cfg is populated
+  Serial.print(F("GPS    : "));
+  bool gpsDetected = gpsInit();
+  if (gpsDetected) {
+    Serial.println(F("detected"));
+  } else {
+    Serial.println(F("no data!"));
+    ledState = LED_FAULT;
+  }
 
   // Initialise working locator from stored config; GPS will override if empty
   strncpy(loc, cfg.locator, sizeof(loc));

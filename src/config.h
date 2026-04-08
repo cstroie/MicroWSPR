@@ -21,7 +21,7 @@
  *   0x0000-0x0001  CONFIG_MAGIC (uint16_t)
  *   0x0002-…       Config struct (CONFIG_ADDR)
  */
-#define CONFIG_MAGIC 0xAB03
+#define CONFIG_MAGIC 0xAB04
 #define CONFIG_ADDR  2
 
 /**
@@ -45,6 +45,11 @@
  *                 Applied at startup via DDS.setCorrection(); 0 = no correction.
  *   clkOutput   — Si5351 output clock to use for TX: 0=CLK0, 1=CLK1, 2=CLK2.
  *                 Default 0 (CLK0).  All three outputs are routed through PLLB.
+ *   gpsRxPin    — Arduino digital pin connected to GPS TX (SoftwareSerial RX).
+ *                 Default 3.
+ *   gpsTxPin    — Arduino digital pin connected to GPS RX (SoftwareSerial TX,
+ *                 unused but required by the SoftwareSerial constructor).
+ *                 Default 4.
  */
 struct Config {
   char     callsign[10];
@@ -54,6 +59,8 @@ struct Config {
   uint16_t bands;
   int32_t  calibration;
   uint8_t  clkOutput;
+  uint8_t  gpsRxPin;
+  uint8_t  gpsTxPin;
 };
 
 /** Active configuration; loaded from EEPROM by configLoad(). */

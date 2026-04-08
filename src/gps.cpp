@@ -18,7 +18,7 @@ volatile GPRMCData gpsData = {0, 0, 0, 0, 'N', 'E', false};
 // Working locator: initialised from cfg.locator at boot; GPS updates it when cfg.locator is empty
 char loc[7];
 
-static SoftwareSerial SoftSerial(3, 4);  // RX=pin3, TX=pin4 (TX unused)
+static SoftwareSerial *SoftSerial = nullptr;
 
 // ── parser ───────────────────────────────────────────────────────────────────
 
@@ -115,10 +115,13 @@ static bool parseGPRMC(char c) {
 // ── public API ───────────────────────────────────────────────────────────────
 
 bool gpsInit() {
-  SoftSerial.begin(9600);
+  // Construct SoftwareSerial with the pins stored in cfg (loaded before this call)
+  delete SoftSerial;
+  SoftSerial = new SoftwareSerial(cfg.gpsRxPin, cfg.gpsTxPin);
+  SoftSerial->begin(9600);
   // Wait up to 1 s; any byte is enough to confirm the module is alive
   for (unsigned long start = millis(); millis() - start < 1000;)
-    if (SoftSerial.available()) return true;
+    if (SoftSerial->available()) return true;
   return false;
 }
 
@@ -126,8 +129,8 @@ int gpsUpdate() {
   // Consume all bytes arriving in the next 1 s window, feeding the parser
   bool newData = false;
   for (unsigned long start = millis(); millis() - start < 1000;) {
-    while (SoftSerial.available()) {
-      char c = SoftSerial.read();
+    while (SoftSerial->available()) {
+      char c = SoftSerial->read();
       //Serial.print(c);  // echo GPS data to Serial for debugging; comment out if not needed
       if (parseGPRMC(c))
         newData = true;

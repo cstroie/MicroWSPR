@@ -88,6 +88,8 @@ static void showConfig() {
   Serial.print(F("  5. Bands      : ")); printBands(); Serial.println();
   Serial.print(F("  6. Calibration: ")); Serial.print(cfg.calibration); Serial.println(F(" Hz"));
   Serial.print(F("  7. CLK output : CLK")); Serial.println(cfg.clkOutput);
+  Serial.print(F("  8. GPS RX pin : ")); Serial.println(cfg.gpsRxPin);
+  Serial.print(F("  9. GPS TX pin : ")); Serial.println(cfg.gpsTxPin);
   Serial.println(F("--------------------------------"));
   Serial.println(F("  S. Save and exit"));
   Serial.println(F("  Q. Quit without saving"));
@@ -218,6 +220,27 @@ static void editClkOutput() {
 }
 
 /**
+ * Prompt for a GPS SoftwareSerial pin number (0-19) and store it.
+ * Pins 0-13 are digital; 14-19 map to A0-A5.  TX is never driven but must
+ * be a valid pin number for the SoftwareSerial constructor.
+ * Changes take effect on the next call to gpsInit() (i.e. after reboot or
+ * if gpsInit() is called again following a config change).
+ */
+static void editGpsPin(const __FlashStringHelper *label, uint8_t *pin) {
+  char buf[4];
+  Serial.print(label);
+  Serial.print(*pin);
+  Serial.print(F("]: "));
+  if (readLine(buf, 2) > 0) {
+    int v = atoi(buf);
+    if (v >= 0 && v <= 19)
+      *pin = (uint8_t)v;
+    else
+      Serial.println(F("Out of range, unchanged."));
+  }
+}
+
+/**
  * Interactively toggle enabled bands in cfg.bands.
  * Prints the full band list with current on/off state, then reads band numbers
  * one at a time, toggling the corresponding bit in cfg.bands.  Enter 0 to
@@ -270,6 +293,8 @@ void configSummary() {
   Serial.print(F("Decimation : ")); Serial.println(cfg.decimation);
   Serial.print(F("Calibration: ")); Serial.print(cfg.calibration); Serial.println(F(" Hz"));
   Serial.print(F("CLK output : CLK")); Serial.println(cfg.clkOutput);
+  Serial.print(F("GPS RX pin : ")); Serial.println(cfg.gpsRxPin);
+  Serial.print(F("GPS TX pin : ")); Serial.println(cfg.gpsTxPin);
 }
 
 void configDefaults() {
@@ -280,6 +305,8 @@ void configDefaults() {
   cfg.bands       = BANDS_DEFAULT;
   cfg.calibration = 0;
   cfg.clkOutput   = 0;
+  cfg.gpsRxPin    = 3;
+  cfg.gpsTxPin    = 4;
 }
 
 void configLoad() {
@@ -300,6 +327,8 @@ void configLoad() {
     if (cfg.decimation == 0) cfg.decimation = 1;
     if (cfg.dbm > 60)        cfg.dbm = 10;
     if (cfg.clkOutput > 2)   cfg.clkOutput = 0;
+    if (cfg.gpsRxPin > 19)   cfg.gpsRxPin  = 3;
+    if (cfg.gpsTxPin > 19)   cfg.gpsTxPin  = 4;
   }
 }
 
@@ -328,6 +357,8 @@ void configTUI() {
       case '5': editBands();      break;
       case '6': editCalibration(); break;
       case '7': editClkOutput();   break;
+      case '8': editGpsPin(F("GPS RX pin (0-19) ["), &cfg.gpsRxPin); break;
+      case '9': editGpsPin(F("GPS TX pin (0-19) ["), &cfg.gpsTxPin); break;
       case 'S': configSave();     return;
       case 'Q':                   return;
       default:  Serial.println(F("Unknown option.")); break;
