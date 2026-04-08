@@ -20,20 +20,169 @@
 #include <Arduino.h>
 #include "config.h"
 
-// Compile-time constant — set via build_flags, not stored in EEPROM
 #ifndef CALIBRATION
 #define CALIBRATION (0)
 #endif
 
-#ifdef USE_AD9833
-#include <MD_AD9833.h>
-#include <SPI.h>
-#endif
-#ifdef USE_SI5351
-#include <si5351.h>
-#endif
 #include <JTEncode.h>
 #include <SoftwareSerial.h>
+#include <Wire.h>
+
+/**
+ * Minimal Si5351 driver for MicroWSPR
+ * Based on uSDX implementation - uses Wire library for I2C
+ * Optimized for WSPR tone generation on CLK2
+ */
+#define SI5351_ADDR 0x60
+#define F_XTAL 25004000UL
+
+/**
+ * Si5351 frequency synthesizer driver
+ * 
+ * Uses Integer-N PLL mode for WSPR tones which only need coarse frequency setting.
+ * This avoids the heavy fractional-N math of the full library, saving ~10KB flash.
+ * 
+ * Key functions:
+ *   init()       - Initialize I2C and disable all outputs
+ *   set_freq()   - Set output frequency (fout in Hz)
+ *   output_enable() - Enable/disable clock output
+ *   set_correction() - Apply frequency correction (calibration)
+ */
+class SI5351 {
+private:
+  volatile int32_t _fout;
+  volatile uint8_t _div;
+  volatile uint16_t _msa128min512;
+  volatile uint32_t _msb128;
+  int16_t iqmsa;
+  uint32_t fxtal;
+  #define _MSC 0x80000
+
+  /**
+   * Write single byte to Si5351 register
+   */
+  void SendRegister(uint8_t reg, uint8_t val) {
+    Wire.beginTransmission(SI5351_ADDR);
+    Wire.write(reg);
+    Wire.write(val);
+    Wire.endTransmission();
+  }
+
+  /**
+   * Write multiple bytes to Si5351 registers
+   */
+  void SendRegisterBulk(uint8_t reg, uint8_t* data, uint8_t n) {
+    Wire.beginTransmission(SI5351_ADDR);
+    Wire.write(reg);
+    while (n--) Wire.write(*data++);
+    Wire.endTransmission();
+  }
+
+public:
+  /**
+   * Initialize Si5351
+   * @param csLoad - Crystal load capacitance (8 = 8pF, ignored in this minimal driver)
+   * @param - ignored parameter for compatibility
+   * @param - ignored parameter for compatibility
+   * @return true (always succeeds in minimal driver)
+   */
+  bool init(uint8_t, uint32_t, int32_t) {
+    Wire.begin();
+    Wire.setClock(400000UL);
+    SendRegister(3, 0xFF);
+    for (uint8_t i = 0; i < 6; i++) SendRegister(16 + i, 0x80);
+    SendRegister(3, 0xFF);
+    return true;
+  }
+
+  /**
+   * Set frequency correction (calibration offset)
+   * @param corr - Correction value in Hz (subtracted from nominal crystal frequency)
+   * @param - ignored parameter for compatibility
+   */
+  void set_correction(int32_t corr, uint8_t) {
+    fxtal = F_XTAL - corr;
+  }
+
+  /**
+   * Set output frequency
+   * @param fout - Desired output frequency in Hz
+   * @param clk - Clock output (0, 1, or 2) - only CLK2 used for WSPR
+   * 
+   * Uses integer-N PLL mode for simplicity. For WSPR tones this provides
+   * adequate precision. The frequency is first divided to stay within
+   * the PLL's usable range, then multiplied back up.
+   */
+  void set_freq(uint32_t fout, uint8_t clk) {
+    uint8_t rdiv = 0;
+    if (fout < 500000) { rdiv = 7; fout *= 128; }
+    uint16_t d = (16 * fxtal) / fout;
+    if (fout > 30000000) d = (34 * fxtal) / fout;
+    if ((d * (fout - 5000) / fxtal) != (d * (fout + 5000) / fxtal)) d--;
+    uint32_t fvcoa = d * fout;
+    uint8_t msa = fvcoa / fxtal;
+    uint32_t msb = ((uint64_t)(fvcoa % fxtal) * _MSC * 128) / fxtal;
+    uint32_t msp1 = 128 * msa + 128 * msb / _MSC - 512;
+    uint32_t msp2 = 128 * msb - 128 * msb / _MSC * _MSC;
+    uint8_t pll_regs[8] = {
+      (uint8_t)((_MSC >> 8) & 0xFF),
+      (uint8_t)(_MSC & 0xFF),
+      (uint8_t)(msp1 >> 16),
+      (uint8_t)(msp1 >> 8),
+      (uint8_t)(msp1),
+      (uint8_t)(((_MSC >> 12) & 0xF0) | (msp2 >> 16)),
+      (uint8_t)(msp2 >> 8),
+      (uint8_t)(msp2)
+    };
+    SendRegisterBulk(26, pll_regs, 8);
+    SendRegisterBulk(26 + 8, pll_regs, 8);
+    msp1 = (128 * msa - 512) | (((uint32_t)rdiv) << 20);
+    uint8_t ms_regs[8] = {0, 1, (uint8_t)(msp1 >> 16), (uint8_t)(msp1 >> 8), (uint8_t)(msp1), 0, 0, 0};
+    SendRegisterBulk(42, ms_regs, 8);
+    SendRegisterBulk(42 + 8, ms_regs, 8);
+    SendRegisterBulk(42 + 16, ms_regs, 8);
+    SendRegister(16, 0x4C);
+    SendRegister(17, 0x4C);
+    SendRegister(18, 0x6C);
+    if (iqmsa != msa) { iqmsa = msa; SendRegister(177, 0xA0); }
+    SendRegister(3, 0xFC);
+    _fout = fout; _div = d; _msa128min512 = msa * 128 - 512; _msb128 = msb;
+  }
+
+  /**
+   * Enable or disable clock output
+   * @param clk - Clock output (0, 1, or 2)
+   * @param enable - 1 to enable, 0 to disable
+   */
+  void output_enable(uint8_t clk, uint8_t enable) {
+    uint8_t mask = ~(1 << clk);
+    if (enable) SendRegister(3, 0xFF);
+    else SendRegister(3, mask);
+  }
+
+  /**
+   * Set drive strength
+   * @param clk - Clock output (0, 1, or 2)
+   * @param strength - Drive strength (0=2mA, 1=4mA, 2=6mA, 3=8mA)
+   */
+  void drive_strength(uint8_t clk, uint8_t strength) {
+    uint8_t val = RecvRegister(16 + clk);
+    SendRegister(16 + clk, (val & 0xF9) | (strength << 1));
+  }
+
+  /**
+   * Read single byte from Si5351 register
+   */
+  uint8_t RecvRegister(uint8_t reg) {
+    Wire.beginTransmission(SI5351_ADDR);
+    Wire.write(reg);
+    Wire.endTransmission();
+    Wire.requestFrom(SI5351_ADDR, (uint8_t)1);
+    return Wire.read();
+  }
+};
+
+SI5351 DDS;
 
 uint8_t txBuf[255];
 
@@ -66,31 +215,30 @@ const char DEVNAME[] = "MicroWSPR";
 const char VERSION[] = "v1.0";
 const char DATE[]    = __DATE__;
 
-#ifdef USE_AD9833
-const int FSYNC = 10;
-const int DATA  = 11;
-const int CLK   = 13;
-MD_AD9833 DDS(FSYNC);
-#endif
-#ifdef USE_SI5351
-Si5351 DDS;
-#endif
-
 JTEncode JT;
 SoftwareSerial SoftSerial(3, 4);
 
+/**
+ * GPS RMC sentence data structure
+ * Minimal storage for $GPRMC NMEA sentences (no satellite count)
+ */
 struct GPRMCData {
-  uint32_t time;
-  uint32_t date;
-  long lat;
-  long lon;
-  char lat_ns;
-  char lon_ew;
-  bool valid;
+  uint32_t time;       // HHMMSSss (hhmmss.ss * 100)
+  uint32_t date;       // DDMMYY
+  long lat;            // Latitude in minutes * 10000 (1e-4 arc minutes)
+  long lon;            // Longitude in minutes * 10000
+  char lat_ns;         // N or S
+  char lon_ew;         // E or W
+  bool valid;          // A = valid fix, V = invalid
 };
 
 volatile GPRMCData gpsData = {0, 0, 0, 0, 'N', 'E', false};
 
+/**
+ * Parse single character from GPS NMEA stream
+ * Extracts time, date, lat/lon from $GPRMC sentences
+ * @return true when a complete valid sentence is parsed
+ */
 bool parseGPRMC(char c) {
   static uint8_t state = 0;
   static long value = 0;
@@ -157,8 +305,10 @@ bool parseGPRMC(char c) {
 
 // ── band cycling ─────────────────────────────────────────────────────────────
 
-// Advance curBand to the next enabled band in cfg.bands, wrapping around.
-// Sets curBand to 0 if no band is enabled.
+/**
+ * Advance to next enabled band
+ * Cycles through cfg.bands bitmask, wrapping around. Sets curBand to 0 if no bands enabled.
+ */
 void advanceBand() {
   if (!cfg.bands) { curBand = 0; return; }
   for (int i = 1; i <= 14; i++) {
@@ -170,6 +320,11 @@ void advanceBand() {
 
 // ── transmit ─────────────────────────────────────────────────────────────────
 
+/**
+ * Transmit WSPR symbols on specified band
+ * Encodes message and transmits at random frequency within WSPR channel
+ * @param band - HAM_BANDS value (1-14), 0 = no transmission
+ */
 void transmit(uint8_t band = 0) {
   uint32_t nextSym;
   float wsprChanFrq = 1400 + (random(25) + 5) * (4.0 * 12000UL / 8192);
@@ -180,22 +335,12 @@ void transmit(uint8_t band = 0) {
   Serial.print(F(" "));
   Serial.println(wsprBaseFrq[band] + wsprChanFrq, 3);
 #endif
-#ifdef USE_AD9833
-  DDS.setMode(MD_AD9833::MODE_SINE);
-#endif
-#ifdef USE_SI5351
-  DDS.output_enable(SI5351_CLK2, 1);
+  DDS.output_enable(2, 1);
   digitalWrite(LED_BUILTIN, HIGH);
-#endif
   nextSym = millis();
   for (uint8_t i = 0; i < WSPR_SYMBOL_COUNT; i++) {
     wsprSymbFrq = wsprBaseFrq[band] + wsprChanFrq + (txBuf[i] * wsprToneSep / 1000.0);
-#ifdef USE_AD9833
-    DDS.setFrequency(MD_AD9833::CHAN_0, wsprSymbFrq);
-#endif
-#ifdef USE_SI5351
-    DDS.set_freq(wsprSymbFrq * 100, SI5351_CLK2);
-#endif
+    DDS.set_freq(wsprSymbFrq * 100, 2);
     nextSym += wsprToneDur;
 #ifdef DEBUG
     Serial.print(i); Serial.print(' ');
@@ -204,17 +349,12 @@ void transmit(uint8_t band = 0) {
 #endif
     while (millis() < nextSym);
   }
-#ifdef USE_AD9833
-  DDS.setMode(MD_AD9833::MODE_OFF);
-#endif
-#ifdef USE_SI5351
   digitalWrite(LED_BUILTIN, LOW);
-  DDS.output_enable(SI5351_CLK2, 0);
-#endif
+  DDS.output_enable(2, 0);
 }
 
 // ── GPS helpers ───────────────────────────────────────────────────────────────
-
+// Convert lat/lon to Maidenhead locator (4-character grid square)
 void getLocator(char *loc, float lat, float lng) {
   float rem;
   rem = lng + 180.0;
@@ -232,6 +372,7 @@ void getLocator(char *loc, float lat, float lng) {
   loc[4] = '\0';
 }
 
+// Generate entropy from floating analog input for randomSeed()
 long getRandomSeed(int numBits = 31) {
   if (numBits > 31 || numBits < 1) numBits = 31;
   const int  baseIntervalMs    = 1;
@@ -261,39 +402,24 @@ long getRandomSeed(int numBits = 31) {
 }
 
 // ── setup ────────────────────────────────────────────────────────────────────
-
+// Initialize Serial, GPS, Si5351, load config, start scheduler
 void setup() {
   Serial.begin(115200);
   SoftSerial.begin(9600);
 
   Serial.println();
   Serial.print(DEVNAME); Serial.print(' ');
-  Serial.print(VERSION); Serial.print(' ');
-#ifdef USE_AD9833
-  Serial.print(F("AD9833"));
-#endif
-#ifdef USE_SI5351
-  Serial.print(F("SI5351"));
-#endif
-  Serial.print(F(" ("));
+  Serial.print(VERSION); Serial.print(F(" SI5351 ("));
   Serial.print(DATE);
   Serial.println(')');
 
-#ifdef USE_AD9833
-  DDS.begin();
-  DDS.setMode(MD_AD9833::MODE_OFF);
-#endif
-#ifdef USE_SI5351
-  if (!DDS.init(SI5351_CRYSTAL_LOAD_8PF, 0, 0))
-    Serial.println(F("Si5351 not found on I2C bus!"));
+  DDS.init(8, 0, 0);
 #if CALIBRATION != 0
-  DDS.set_correction(CALIBRATION, SI5351_PLL_INPUT_XO);
-  DDS.set_pll(SI5351_PLL_FIXED, SI5351_PLLA);
+  DDS.set_correction(CALIBRATION, 0);
 #endif
-  DDS.drive_strength(SI5351_CLK2, SI5351_DRIVE_8MA);
-  DDS.output_enable(SI5351_CLK2, 0);
+  DDS.drive_strength(2, 2);  // 2 = 8mA
+  DDS.output_enable(2, 0);
   pinMode(LED_BUILTIN, OUTPUT);
-#endif
 
   randomSeed(getRandomSeed());
 
@@ -324,7 +450,7 @@ void setup() {
 }
 
 // ── loop ─────────────────────────────────────────────────────────────────────
-
+// Main scheduler: check TX timing, read GPS, schedule transmissions
 void loop() {
   if (loc[0] != '\0' && millis() >= nextTX && nextTX > 0) {
     nextTX += (uint32_t)cfg.decimation * 120 * 1000UL;
