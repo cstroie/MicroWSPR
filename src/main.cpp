@@ -19,13 +19,13 @@
 
 #include <Arduino.h>
 #include "config.h"
+#include "gps.h"
 
 #ifndef CALIBRATION
 #define CALIBRATION (0)
 #endif
 
 #include <JTEncode.h>
-#include <SoftwareSerial.h>
 #include <Wire.h>
 
 // ── constants ────────────────────────────────────────────────────────────────
@@ -211,93 +211,7 @@ void transmit(uint8_t band = 0) {
   DDS.outputEnable(2, 0);
 }
 
-// ── GPS ──────────────────────────────────────────────────────────────────────
-
-/** Parsed fields from a $GPRMC NMEA sentence. */
-struct GPRMCData {
-  uint32_t time;       // HHMMSS as 6-digit integer (HH*10000 + MM*100 + SS)
-  uint32_t date;       // DDMMYY
-  long lat;            // Raw DDMM.MMMM digits (decimal stripped); to degrees: (lat/1000000) + (lat%1000000)/600000.0
-  long lon;            // Raw DDDMM.MMMM digits; same conversion
-  char lat_ns;         // N or S
-  char lon_ew;         // E or W
-  bool valid;          // A = valid fix, V = invalid
-};
-
-volatile GPRMCData gpsData = {0, 0, 0, 0, 'N', 'E', false};
-
-// Working locator: set from cfg.locator on boot, updated by GPS when cfg.locator is empty
-char loc[7];
-
-SoftwareSerial SoftSerial(3, 4);
-
-/**
- * Feed one character from the GPS NMEA stream into the $GPRMC parser.
- * Accumulates fields into gpsData; returns true when a complete sentence is parsed.
- */
-bool parseGPRMC(char c) {
-  static uint8_t field  = 0xFF;  // 0xFF = waiting for '$'
-  static uint8_t pos    = 0;     // position within current field
-  static uint8_t hdrIdx = 0;     // index into "GPRMC" header
-  static long    acc    = 0;     // digit accumulator
-
-  if (c == '$') { field = 0; pos = 0; hdrIdx = 0; acc = 0; return false; }
-  if (field == 0xFF) return false;
-  if (c == '\r' || c == '\n' || c == '*') { field = 0xFF; return false; }
-
-  if (c == ',') {
-    switch (field) {
-      case 1: gpsData.time = acc; break;   // HHMMSS
-      case 3: gpsData.lat  = acc; break;   // DDMMmmmm
-      case 5: gpsData.lon  = acc; break;   // DDDMMmmmm
-    }
-    field++; pos = 0; acc = 0;
-    return false;
-  }
-
-  switch (field) {
-    case 0: {  // verify "GPRMC" header
-      static const char hdr[] = "GPRMC";
-      if (hdrIdx < 5 && c != hdr[hdrIdx++]) field = 0xFF;
-      break;
-    }
-    case 1:  // time: HHMMSS.ss — accumulate first 6 integer digits only
-      if (c != '.' && pos < 6 && c >= '0' && c <= '9') { acc = acc * 10 + (c - '0'); pos++; }
-      break;
-    case 2:  // validity: A or V
-      if (pos == 0) { gpsData.valid = (c == 'A'); pos++; }
-      break;
-    case 3:  // lat: DDMM.MMMM — accumulate all digits, skip decimal point
-    case 5:  // lon: DDDMM.MMMM
-      if (c != '.' && c >= '0' && c <= '9') acc = acc * 10 + (c - '0');
-      break;
-    case 4:  // N or S
-      if (pos == 0) { gpsData.lat_ns = c; pos++; }
-      break;
-    case 6:  // E or W — last field needed; signal completion
-      if (pos == 0) { gpsData.lon_ew = c; return true; }
-      break;
-  }
-  return false;
-}
-
-/** Compute a 4-character Maidenhead locator from decimal lat/lon into loc[5]. */
-void getLocator(char *loc, float lat, float lng) {
-  float rem;
-  rem = lng + 180.0;
-  int o1 = (int)(rem / 20.0);
-  rem -= (float)o1 * 20.0;
-  int o2 = (int)(rem / 2.0);
-  rem = lat + 90.0;
-  int a1 = (int)(rem / 10.0);
-  rem -= (float)a1 * 10.0;
-  int a2 = (int)(rem);
-  loc[0] = (char)o1 + 'A';
-  loc[1] = (char)a1 + 'A';
-  loc[2] = (char)o2 + '0';
-  loc[3] = (char)a2 + '0';
-  loc[4] = '\0';
-}
+// ── entropy ──────────────────────────────────────────────────────────────────
 
 /** Sample analog noise on A0 to produce numBits bits of entropy for randomSeed(). */
 long getRandomSeed(int numBits = 31) {
@@ -332,7 +246,7 @@ long getRandomSeed(int numBits = 31) {
 /** Initialize Serial, GPS, Si5351, load config, and open the boot config window. */
 void setup() {
   Serial.begin(115200);
-  SoftSerial.begin(9600);
+  gpsInit();
 
   Serial.println();
   Serial.print(DEVNAME); Serial.print(' ');
@@ -402,53 +316,9 @@ void loop() {
   }
 #endif
 
-  bool newData = false;
-  for (unsigned long start = millis(); millis() - start < 1000;) {
-    while (SoftSerial.available()) {
-      char c = SoftSerial.read();
-#ifdef DEBUG_GPS
-      Serial.write(c);
-#endif
-      if (parseGPRMC(c))
-        newData = true;
-    }
-  }
-
-  if (newData) {
-    Serial.println();
-    Serial.print(F("GPS: "));
-    Serial.print('-');  // No satellite count in GPRMC
-    Serial.print(',');
-
-    float lat = 0.0, lon = 0.0;
-    if (gpsData.valid && gpsData.lat != 0 && gpsData.lon != 0) {
-      lat = (float)(gpsData.lat / 1000000L) + (float)(gpsData.lat % 1000000L) / 600000.0f;
-      if (gpsData.lat_ns == 'S') lat = -lat;
-      lon = (float)(gpsData.lon / 1000000L) + (float)(gpsData.lon % 1000000L) / 600000.0f;
-      if (gpsData.lon_ew == 'W') lon = -lon;
-      Serial.print(lat, 6); Serial.print(',');
-      Serial.print(lon, 6); Serial.print(',');
-      if (!cfg.locator[0])
-        getLocator(loc, lat, lon);
-    } else {
-      Serial.print(F("*,*,"));
-    }
-    if (loc[0]) { Serial.print(loc); Serial.print(','); }
-    else          Serial.print(F("*,"));
-
-    if (gpsData.valid && gpsData.time > 0) {
-      uint32_t t = gpsData.time;
-      uint8_t hour   = t / 10000;
-      uint8_t minute = (t / 100) % 100;
-      uint8_t second = t % 100;
-      uint8_t rem = ((minute % 2 == 0) ? 120 : 60) - second;
-      char buf[16];
-      sprintf(buf, "%02d:%02d:%02d,%ds", hour, minute, second, rem);
-      Serial.println(buf);
-      if (nextTX == 0 || countTX * cfg.decimation >= 30) {
-        nextTX   = millis() + (rem + 1) * 1000UL;
-        countTX  = 0;
-      }
-    }
+  int rem = gpsUpdate();
+  if (rem >= 0 && (nextTX == 0 || countTX * cfg.decimation >= 30)) {
+    nextTX  = millis() + (rem + 1) * 1000UL;
+    countTX = 0;
   }
 }
