@@ -419,6 +419,21 @@ static bool alarmReached(uint32_t alarmHHMMSS) {
 void loop() {
   ledUpdate();
 
+  // Poll GPS first so the TX gate always sees a fresh timestamp
+  int rem = gpsUpdate(nextTXTime);
+  if (rem >= 0) {
+    if (ledState == LED_NO_FIX)
+      ledState = LED_IDLE;
+  } else {
+    // GPS time lost — cancel schedule and signal no-fix until time returns
+    if (nextTXTime > 0) {
+      Serial.println(F("GPS time lost, TX suspended."));
+      nextTXTime = 0;
+    }
+    ledState = LED_NO_FIX;
+  }
+
+  // TX gate — fire when fresh GPS time has reached the scheduled alarm
   bool txFired = false;
   if (loc[0] != '\0' && nextTXTime > 0 && alarmReached(nextTXTime)) {
     nextTXTime = 0;  // cleared here; rescheduled below from fresh GPS time
@@ -435,19 +450,6 @@ void loop() {
     }
     advanceBand();
     txFired = true;
-  }
-
-  int rem = gpsUpdate();
-  if (rem >= 0) {
-    if (ledState == LED_NO_FIX)
-      ledState = LED_IDLE;
-  } else {
-    // GPS time lost — cancel schedule and signal no-fix until time returns
-    if (nextTXTime > 0) {
-      Serial.println(F("GPS time lost, TX suspended."));
-      nextTXTime = 0;
-    }
-    ledState = LED_NO_FIX;
   }
 
   // Auto-save GPS-derived locator once per boot if it differs from stored value

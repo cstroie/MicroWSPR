@@ -20,6 +20,30 @@ char loc[7];
 
 static SoftwareSerial *SoftSerial = nullptr;
 
+// ── helpers ──────────────────────────────────────────────────────────────────
+
+static inline uint32_t hhmmssToSec(uint32_t t) {
+  return (t / 10000) * 3600UL + ((t / 100) % 100) * 60UL + (t % 100);
+}
+
+/**
+ * Print "  next TX: Xs" when an alarm is scheduled, or "  next slot: Xs" when
+ * waiting for the first schedule.  Handles midnight rollover like alarmReached().
+ */
+static void printSlot(int rem, uint32_t nextTXTime) {
+  if (nextTXTime > 0) {
+    int32_t cur  = (int32_t)hhmmssToSec(gpsData.time);
+    int32_t alm  = (int32_t)hhmmssToSec(nextTXTime);
+    int32_t diff = alm - cur;
+    if (diff >  43200) diff -= 86400;
+    if (diff < -43200) diff += 86400;
+    if (diff < 0) diff = 0;
+    Serial.print(F("  next TX: ")); Serial.print((int)diff); Serial.print('s');
+  } else {
+    Serial.print(F("  next slot: ")); Serial.print(rem); Serial.print('s');
+  }
+}
+
 // ── parser ───────────────────────────────────────────────────────────────────
 
 /**
@@ -125,7 +149,7 @@ bool gpsInit() {
   return false;
 }
 
-int gpsUpdate() {
+int gpsUpdate(uint32_t nextTXTime) {
   // Consume all bytes arriving in the next 1 s window, feeding the parser
   bool newData = false;
   for (unsigned long start = millis(); millis() - start < 1000;) {
@@ -168,10 +192,9 @@ int gpsUpdate() {
     hadFix = false;
   }
 
-  // Compute seconds to the next WSPR TX slot (every even UTC minute)
-  // WSPR slots start at :00 of every even minute (0, 2, 4, ... UTC).
-  // If the current minute is even, the next slot boundary is 120-second seconds away.
-  // If the current minute is odd, it is only 60-second seconds away.
+  // Compute seconds to the next WSPR slot boundary (every even UTC minute).
+  // At second :00 of an even minute, rem=120 (next boundary is a full 2-minute cycle away).
+  // At second :00 of an odd minute, rem=60.  Returns -1 when no GPS time is available.
   int rem = -1;
   char timebuf[9] = "";  // formatted as "HH:MM:SS"
   if (hasTime) {
@@ -198,13 +221,13 @@ int gpsUpdate() {
     Serial.print(F("  ")); Serial.print(loc);
     if (timebuf[0]) {
       Serial.print(F("  ")); Serial.print(timebuf); Serial.print(F(" UTC"));
-      Serial.print(F("  next slot: ")); Serial.print(rem); Serial.print('s');
+      printSlot(rem, nextTXTime);
     }
   } else if (hasTime && loc[0]) {
     // Time acquired and locator available from EEPROM — no position fix needed
     Serial.print(F("GPS: ")); Serial.print(timebuf); Serial.print(F(" UTC"));
     Serial.print(F("  loc: ")); Serial.print(loc);
-    Serial.print(F("  next slot: ")); Serial.print(rem); Serial.print('s');
+    printSlot(rem, nextTXTime);
   } else {
     Serial.print(F("GPS: no fix"));
     if (timebuf[0]) {

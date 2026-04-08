@@ -84,7 +84,7 @@ bool gpsInit();
  *
  * Returns seconds to the next WSPR TX slot (≥ 0), or -1 if no valid time.
  */
-int gpsUpdate();
+int gpsUpdate(uint32_t nextTXTime = 0);
 
 /**
  * Compute a 4-character Maidenhead grid square from decimal lat/lon.
