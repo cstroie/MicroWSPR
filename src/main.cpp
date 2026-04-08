@@ -34,7 +34,6 @@
 #endif
 #include <JTEncode.h>
 #include <SoftwareSerial.h>
-#include <TinyGPS.h>
 
 uint8_t txBuf[255];
 
@@ -78,9 +77,83 @@ Si5351 DDS;
 #endif
 
 JTEncode JT;
-TinyGPS gps;
 SoftwareSerial SoftSerial(3, 4);
-float lat = 0.0, lon = 0.0;
+
+struct GPRMCData {
+  uint32_t time;
+  uint32_t date;
+  long lat;
+  long lon;
+  char lat_ns;
+  char lon_ew;
+  bool valid;
+};
+
+volatile GPRMCData gpsData = {0, 0, 0, 0, 'N', 'E', false};
+
+bool parseGPRMC(char c) {
+  static uint8_t state = 0;
+  static long value = 0;
+  static uint8_t digitCount = 0;
+  
+  if (c == '$') {
+    state = 0;
+    value = 0;
+    digitCount = 0;
+    return false;
+  }
+  
+  static const char fmt[] = "$GPRMC,ddddd.dd?,A,lllnn.nnnn?,ooooo.ooooo?,???";
+  if (state >= sizeof(fmt) - 1) return false;
+  
+  char expected = fmt[state++];
+  
+  if (expected == '?' || expected == c) {
+    if (expected == '?' || (c >= '0' && c <= '9')) {
+    } else {
+      state = 0;
+      return false;
+    }
+  } else {
+    state = 0;
+    return false;
+  }
+  
+  uint8_t s = state - 1;
+  
+  if (s >= 1 && s <= 6) { // time: HHMMSS
+    if (c >= '0' && c <= '9') {
+      value = value * 10 + (c - '0');
+      digitCount++;
+      if (digitCount == 6) gpsData.time = value;
+    }
+  } else if (s == 7) { // decimal tenths
+    if (c >= '0' && c <= '9') {
+      gpsData.time = gpsData.time * 10 + (c - '0');
+    }
+  } else if (s == 9) { // validity
+    gpsData.valid = (c == 'A');
+  } else if (s >= 10 && s <= 17) { // latitude
+    if (c >= '0' && c <= '9') {
+      value = value * 10 + (c - '0');
+    }
+  } else if (s == 18) {
+    gpsData.lat = value;
+    gpsData.lat_ns = c;
+    value = 0;
+  } else if (s >= 19 && s <= 27) { // longitude
+    if (c >= '0' && c <= '9') {
+      value = value * 10 + (c - '0');
+    }
+  } else if (s == 28) {
+    gpsData.lon = value;
+    gpsData.lon_ew = c;
+    value = 0;
+    return true;
+  }
+  
+  return false;
+}
 
 // ── band cycling ─────────────────────────────────────────────────────────────
 
@@ -283,24 +356,25 @@ void loop() {
 #ifdef DEBUG_GPS
       Serial.write(c);
 #endif
-      if (gps.encode(c))
+      if (parseGPRMC(c))
         newData = true;
     }
   }
 
   if (newData) {
-    uint32_t age;
-    uint16_t year;
-    uint8_t  month, day, hour, minute, second, hndrds;
     Serial.println();
     Serial.print(F("GPS: "));
-    Serial.print(gps.satellites());
+    Serial.print('-');  // No satellite count in GPRMC
     Serial.print(',');
-    gps.f_get_position(&lat, &lon, &age);
-    if (age != TinyGPS::GPS_INVALID_AGE) {
+    
+    float lat = 0.0, lon = 0.0;
+    if (gpsData.valid && gpsData.lat != 0 && gpsData.lon != 0) {
+      lat = gpsData.lat / 600000.0;
+      if (gpsData.lat_ns == 'S') lat = -lat;
+      lon = gpsData.lon / 600000.0;
+      if (gpsData.lon_ew == 'W') lon = -lon;
       Serial.print(lat, 6); Serial.print(',');
       Serial.print(lon, 6); Serial.print(',');
-      // Only update working locator from GPS if no fixed locator is configured
       if (!cfg.locator[0])
         getLocator(loc, lat, lon);
     } else {
@@ -309,8 +383,11 @@ void loop() {
     if (loc[0]) { Serial.print(loc); Serial.print(','); }
     else          Serial.print(F("*,"));
 
-    gps.crack_datetime(&year, &month, &day, &hour, &minute, &second, &hndrds, &age);
-    if (age != TinyGPS::GPS_INVALID_AGE) {
+    if (gpsData.valid && gpsData.time > 0) {
+      uint32_t t = gpsData.time;
+      uint8_t hour = t / 1000000;
+      uint8_t minute = (t / 10000) % 100;
+      uint8_t second = (t / 100) % 100;
       uint8_t rem = ((minute % 2 == 0) ? 120 : 60) - second;
       char buf[16];
       sprintf(buf, "%02d:%02d:%02d,%ds", hour, minute, second, rem);
