@@ -21,7 +21,7 @@
  *   0x0000-0x0001  CONFIG_MAGIC (uint16_t)
  *   0x0002-…       Config struct (CONFIG_ADDR)
  */
-#define CONFIG_MAGIC 0xAB02
+#define CONFIG_MAGIC 0xAB03
 #define CONFIG_ADDR  2
 
 /**
@@ -43,6 +43,8 @@
  *   bands       — bitmask of enabled HAM_BANDS values; bit N set = band N active.
  *   calibration — Si5351 crystal frequency correction in Hz (signed).
  *                 Applied at startup via DDS.setCorrection(); 0 = no correction.
+ *   clkOutput   — Si5351 output clock to use for TX: 0=CLK0, 1=CLK1, 2=CLK2.
+ *                 Default 0 (CLK0).  All three outputs are routed through PLLB.
  */
 struct Config {
   char     callsign[10];
@@ -51,6 +53,7 @@ struct Config {
   uint8_t  decimation;
   uint16_t bands;
   int32_t  calibration;
+  uint8_t  clkOutput;
 };
 
 /** Active configuration; loaded from EEPROM by configLoad(). */

@@ -117,32 +117,32 @@ void SI5351::setFreq(uint32_t fout, uint8_t clk) {
     (uint8_t)(msp2 >> 8),
     (uint8_t)(msp2)
   };
-  sendRegisterBulk(34, pll_regs, 8);  // PLLB at regs 34-41 (CLK2 uses PLLB per reg 18)
+  sendRegisterBulk(34, pll_regs, 8);  // PLLB at regs 34-41 (all CLKn use PLLB per control reg)
 
-  // ── step 5: encode MS2 output divider in integer mode ─────────────────────
+  // ── step 5: encode MSn output divider in integer mode ─────────────────────
   // In integer mode MSP2=0, MSC=1, MSP1 = 128*d - 512 (AN619 eq. 24).
   // rdiv is placed in bits 22-20 of the first MS parameter word.
+  // MS register base: 42 + clk*8  (CLK0→42, CLK1→50, CLK2→58)
   msp1 = (128 * msa - 512) | (((uint32_t)rdiv) << 20);
-  // MS2 registers (58-65): [MSC_hi=0, MSC_lo=1, MSP1 bytes, MSP2=0 bytes]
   uint8_t ms_regs[8] = {0, 1, (uint8_t)(msp1 >> 16), (uint8_t)(msp1 >> 8), (uint8_t)(msp1), 0, 0, 0};
-  sendRegisterBulk(58, ms_regs, 8);   // MS2 at regs 58-65 (CLK2 output divider)
+  sendRegisterBulk(42 + clk * 8, ms_regs, 8);
 
-  // ── step 6: CLK2 control register ─────────────────────────────────────────
-  // Reg 18 = 0x6C = 0110 1100:
-  //   bit 7 = 0: CLK2 powered on
+  // ── step 6: CLKn control register ─────────────────────────────────────────
+  // Reg 16+clk = 0x6C = 0110 1100:
+  //   bit 7 = 0: CLKn powered on
   //   bit 6 = 1: integer mode
   //   bit 5 = 1: PLLB as source
   //   bit 4 = 0: not inverted
-  //   bits 3-2 = 11: MultiSynth 2 as clock source
+  //   bits 3-2 = 11: MultiSynth N as clock source
   //   bits 1-0 = 00: 2 mA drive (overridden by driveStrength() in setup)
-  sendRegister(18, 0x6C);
+  sendRegister(16 + clk, 0x6C);
 
   // ── step 7: reset PLLB only when the VCO multiplier d changes ─────────────
   // Changing d means fvcoa changes, so the PLL must relock. When d is stable
   // (tone changes within the same WSPR band), msa stays constant and no reset
   // is needed, avoiding phase discontinuities between symbols.
   // Reg 177: bit 7 resets PLLA, bit 5 resets PLLB.
-  if (iqmsa != msa) { iqmsa = msa; sendRegister(177, 0xA0); }
+  if (iqmsa != (int16_t)msa) { iqmsa = msa; sendRegister(177, 0xA0); }
 
   // Cache state for next call
   _fout = fout; _div = d; _msa128min512 = msa * 128 - 512; _msb128 = msb;

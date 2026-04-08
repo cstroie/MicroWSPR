@@ -192,15 +192,15 @@ void transmit(uint8_t band = 0) {
   Serial.println(F(" kHz"));
   ledState = LED_TX;
   ledUpdate();
-  DDS.outputEnable(2, 1);
+  DDS.outputEnable(cfg.clkOutput, 1);
   nextSym = millis();
   for (uint8_t i = 0; i < WSPR_SYMBOL_COUNT; i++) {
     wsprSymbFrq = wsprBaseFrq[band] + wsprChanFrq + (txBuf[i] * wsprToneSep / 1000.0);
-    DDS.setFreq(wsprSymbFrq * 100, 2);
+    DDS.setFreq(wsprSymbFrq * 100, cfg.clkOutput);
     nextSym += wsprToneDur;
     while (millis() < nextSym);
   }
-  DDS.outputEnable(2, 0);
+  DDS.outputEnable(cfg.clkOutput, 0);
   ledState = LED_IDLE;
 }
 
@@ -257,21 +257,22 @@ long getRandomSeed(int numBits = 31) {
  * Sequence:
  *   1. Open Serial at 115200 baud and print the firmware banner.
  *   2. Initialise GPS serial port; set LED_FAULT if no module is detected.
- *   3. Initialise Si5351; apply stored calibration correction; set LED_FAULT
- *      if the chip does not respond on I²C.
+ *   3. Initialise Si5351 (I²C probe only); set LED_FAULT if not found.
  *   4. Seed the PRNG from ADC noise.
  *   5. Load configuration from EEPROM (writes defaults on first boot).
- *   6. Copy cfg.locator into the working loc[] buffer used by gpsUpdate()
+ *   6. Apply cfg.calibration and cfg.clkOutput to the Si5351 now that cfg is
+ *      populated; configure drive strength and disable output until TX time.
+ *   7. Copy cfg.locator into the working loc[] buffer used by gpsUpdate()
  *      and transmit(); GPS will overwrite this when a fix is obtained and
  *      cfg.locator is empty.
- *   7. Select the first enabled band.
- *   8. Print a config summary.
- *   9. Open a 5-second boot-time config window; any serial keypress launches
+ *   8. Select the first enabled band.
+ *   9. Print a config summary.
+ *  10. Open a 5-second boot-time config window; any serial keypress launches
  *      the interactive TUI.
- *  10. Enforce a valid callsign — loop in the TUI until one is set.
- *  11. If GPS is absent and no locator is stored, loop in the TUI until a
+ *  11. Enforce a valid callsign — loop in the TUI until one is set.
+ *  12. If GPS is absent and no locator is stored, loop in the TUI until a
  *      locator is entered (without a position there is nothing to transmit).
- *  12. Print the appropriate "Waiting for GPS…" message and return.
+ *  13. Print the appropriate "Waiting for GPS…" message and return.
  */
 void setup() {
   Serial.begin(115200);
@@ -300,15 +301,16 @@ void setup() {
     Serial.println(F("not found!"));
     ledState = LED_FAULT;
   }
-  if (cfg.calibration != 0)
-    DDS.setCorrection(cfg.calibration, 0);
-  DDS.driveStrength(2, 2);  // strength: 0=2mA, 1=4mA, 2=6mA, 3=8mA
-  DDS.outputEnable(2, 0);
-
   randomSeed(getRandomSeed());
 
   // Load config from EEPROM (or defaults on first boot)
   configLoad();
+
+  // Apply stored Si5351 settings now that cfg is populated
+  if (cfg.calibration != 0)
+    DDS.setCorrection(cfg.calibration, 0);
+  DDS.driveStrength(cfg.clkOutput, 2);  // strength: 0=2mA, 1=4mA, 2=6mA, 3=8mA
+  DDS.outputEnable(cfg.clkOutput, 0);
 
   // Initialise working locator from stored config; GPS will override if empty
   strncpy(loc, cfg.locator, sizeof(loc));

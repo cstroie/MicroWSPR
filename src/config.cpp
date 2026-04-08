@@ -87,6 +87,7 @@ static void showConfig() {
   Serial.print(F("  4. Decimation : ")); Serial.println(cfg.decimation);
   Serial.print(F("  5. Bands      : ")); printBands(); Serial.println();
   Serial.print(F("  6. Calibration: ")); Serial.print(cfg.calibration); Serial.println(F(" Hz"));
+  Serial.print(F("  7. CLK output : CLK")); Serial.println(cfg.clkOutput);
   Serial.println(F("--------------------------------"));
   Serial.println(F("  S. Save and exit"));
   Serial.println(F("  Q. Quit without saving"));
@@ -198,6 +199,25 @@ static void editCalibration() {
 }
 
 /**
+ * Prompt for the Si5351 output clock (0, 1, or 2) and update cfg.clkOutput.
+ * All three outputs are routed through PLLB and are electrically equivalent;
+ * the choice depends on which physical pin is wired to the antenna/filter.
+ */
+static void editClkOutput() {
+  char buf[2];
+  Serial.print(F("CLK output (0, 1, 2) ["));
+  Serial.print(cfg.clkOutput);
+  Serial.print(F("]: "));
+  if (readLine(buf, 1) > 0) {
+    int v = atoi(buf);
+    if (v >= 0 && v <= 2)
+      cfg.clkOutput = (uint8_t)v;
+    else
+      Serial.println(F("Out of range, unchanged."));
+  }
+}
+
+/**
  * Interactively toggle enabled bands in cfg.bands.
  * Prints the full band list with current on/off state, then reads band numbers
  * one at a time, toggling the corresponding bit in cfg.bands.  Enter 0 to
@@ -249,6 +269,7 @@ void configSummary() {
   Serial.print(F("Bands      : ")); printBands(); Serial.println();
   Serial.print(F("Decimation : ")); Serial.println(cfg.decimation);
   Serial.print(F("Calibration: ")); Serial.print(cfg.calibration); Serial.println(F(" Hz"));
+  Serial.print(F("CLK output : CLK")); Serial.println(cfg.clkOutput);
 }
 
 void configDefaults() {
@@ -258,6 +279,7 @@ void configDefaults() {
   cfg.decimation  = 1;
   cfg.bands       = BANDS_DEFAULT;
   cfg.calibration = 0;
+  cfg.clkOutput   = 0;
 }
 
 void configLoad() {
@@ -277,6 +299,7 @@ void configLoad() {
     // Clamp numeric fields to valid ranges; 0/out-of-range indicates corruption.
     if (cfg.decimation == 0) cfg.decimation = 1;
     if (cfg.dbm > 60)        cfg.dbm = 10;
+    if (cfg.clkOutput > 2)   cfg.clkOutput = 0;
   }
 }
 
@@ -304,6 +327,7 @@ void configTUI() {
       case '4': editDecimation(); break;
       case '5': editBands();      break;
       case '6': editCalibration(); break;
+      case '7': editClkOutput();   break;
       case 'S': configSave();     return;
       case 'Q':                   return;
       default:  Serial.println(F("Unknown option.")); break;

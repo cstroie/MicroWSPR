@@ -16,12 +16,13 @@
 #define F_XTAL      25004000UL // Nominal crystal frequency (Hz); trimmed by setCorrection()
 
 /**
- * Minimal Si5351 clock generator driver for WSPR tone generation on CLK2.
+ * Minimal Si5351 clock generator driver for WSPR tone generation.
  *
  * Hardware frequency chain:
- *   crystal (fxtal) → PLLB (fvcoa = d * fout) → MultiSynth 2 (÷d) → CLK2 output
+ *   crystal (fxtal) → PLLB (fvcoa = d * fout) → MultiSynth N (÷d) → CLKn output
  *
- * Only PLLB and MS2 are used; PLLA and CLK0/CLK1 are left powered down.
+ * Any one of CLK0, CLK1, or CLK2 can be used; all are routed through PLLB.
+ * Only PLLB and the selected MSn are active; the other outputs remain powered down.
  * Integer-N PLL mode is used throughout: the fractional part of the MultiSynth
  * divider is fixed at a constant denominator (_MSC), keeping the math in 32-bit
  * integers and saving ~10 KB flash vs the full Etherkit library.
@@ -69,9 +70,9 @@ public:
 
   /**
    * Set the output frequency of clock clk (0-2) to fout (Hz).
-   * Only CLK2 is used for WSPR; clk is accepted for API compatibility.
-   * Computes PLL and MultiSynth register values for integer-N mode and
-   * resets PLLB only when the VCO multiplier d changes between calls.
+   * Computes PLLB and MultiSynth N register values for integer-N mode and
+   * resets PLLB only when the VCO multiplier d changes between calls,
+   * avoiding phase glitches between WSPR symbols on the same band.
    */
   void setFreq(uint32_t fout, uint8_t clk);
 
