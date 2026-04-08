@@ -61,9 +61,6 @@ static bool parseGPRMC(char c) {
   static uint8_t hdrIdx = 0;     // index into "GPRMC" header
   static long    acc    = 0;     // digit accumulator
 
- //Serial.print(F("Field: "));
- //Serial.println(field);
-
   // '$' resets the state machine unconditionally — start of a new sentence
   if (c == '$') { field = 0; pos = 0; hdrIdx = 0; acc = 0; return false; }
   if (field == 0xFF) return false;
@@ -91,7 +88,6 @@ static bool parseGPRMC(char c) {
       if (c != '.' && pos < 6 && c >= '0' && c <= '9') { acc = acc * 10 + (c - '0'); pos++; }
       break;
     case 2:  // fix validity: 'A' = active (valid), 'V' = void (no fix)
-      //if (pos == 0) { gpsData.valid = (c == 'A'); pos++; }
       if (pos == 0) { gpsData.valid = (c == 'A'); pos++; }
       break;
     case 3:  // latitude DDMM.MMMM → accumulate all digits, skip decimal point
@@ -120,14 +116,14 @@ static bool parseGPRMC(char c) {
 
 bool gpsInit() {
   SoftSerial.begin(9600);
-  // Listen for up to 1 second — any byte received confirms the module is powered and sending
+  // Wait up to 1 s; any byte is enough to confirm the module is alive
   for (unsigned long start = millis(); millis() - start < 1000;)
     if (SoftSerial.available()) return true;
   return false;
 }
 
 int gpsUpdate() {
-  // Drain the GPS serial port for exactly 1 second, parsing every character
+  // Consume all bytes arriving in the next 1 s window, feeding the parser
   bool newData = false;
   for (unsigned long start = millis(); millis() - start < 1000;) {
     while (SoftSerial.available()) {

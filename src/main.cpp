@@ -30,6 +30,11 @@ const char DEVNAME[] = "MicroWSPR";
 const char VERSION[] = "v1.0";
 const char DATE[]    = __DATE__;
 
+/**
+ * HAM band indices used to index wsprBaseFrq[].
+ * BAND_OFF (0) means no band is selected; BAND_2190…BAND_2 map to 1-14.
+ * cfg.bands stores a bitmask where bit N corresponds to HAM_BANDS value N.
+ */
 enum HAM_BANDS {
   BAND_OFF,
   BAND_2190, BAND_630,  BAND_160,
@@ -39,16 +44,35 @@ enum HAM_BANDS {
 
 // ── LED status ───────────────────────────────────────────────────────────────
 
+/**
+ * LED blink patterns used to communicate beacon state at a glance.
+ *   LED_FAULT  — fast 100 ms on / 100 ms off: hardware not detected (GPS or Si5351)
+ *   LED_NO_FIX — 50 ms flash every 2 s: waiting for GPS time or fix
+ *   LED_TX     — solid on: actively transmitting WSPR symbols
+ *   LED_IDLE   — off: GPS time acquired, between transmissions
+ */
 enum LedState {
-  LED_FAULT,     // fast blink 100/100 ms — hardware not detected
-  LED_NO_FIX,    // brief flash every 2 s — waiting for GPS fix
-  LED_TX,        // solid on — transmitting
-  LED_IDLE       // off — fix acquired, between transmissions
+  LED_FAULT,
+  LED_NO_FIX,
+  LED_TX,
+  LED_IDLE
 };
 
 LedState ledState = LED_NO_FIX;
 
-/** Drive the LED according to ledState; call from loop() on every iteration. */
+/**
+ * Drive LED_BUILTIN according to the current ledState.
+ *
+ * Must be called on every loop() iteration to maintain accurate timing.
+ * Uses static variables to track toggle time and current pin level so it
+ * never calls delay() and does not block the main loop.
+ *
+ * Blink patterns:
+ *   LED_FAULT  — 100 ms on / 100 ms off (rapid blink)
+ *   LED_NO_FIX — 50 ms on / 1950 ms off (brief flash every 2 s)
+ *   LED_TX     — continuously on
+ *   LED_IDLE   — continuously off
+ */
 void ledUpdate() {
   static uint32_t lastToggle = 0;
   static bool     ledOn      = false;
@@ -56,7 +80,6 @@ void ledUpdate() {
 
   switch (ledState) {
     case LED_FAULT:
-      // 100 ms on / 100 ms off
       if (now - lastToggle >= 100) {
         ledOn = !ledOn;
         digitalWrite(LED_BUILTIN, ledOn);
@@ -64,7 +87,6 @@ void ledUpdate() {
       }
       break;
     case LED_NO_FIX:
-      // 50 ms flash every 2 s
       if (!ledOn && now - lastToggle >= 2000) {
         digitalWrite(LED_BUILTIN, HIGH);
         ledOn = true;
@@ -88,7 +110,13 @@ void ledUpdate() {
 
 // ── WSPR ─────────────────────────────────────────────────────────────────────
 
-// WSPR base frequencies indexed by HAM_BANDS enum (index 0 unused)
+/**
+ * WSPR dial frequencies (Hz) for each HAM_BANDS index.
+ * Index 0 is unused (BAND_OFF).  Values are the standard WSPR channel
+ * centre frequencies as published by the WSPR protocol specification.
+ * The actual TX frequency is offset within the 200 Hz WSPR channel by
+ * transmit() to spread beacons and reduce collisions.
+ */
 const uint32_t wsprBaseFrq[] = {
   0UL,
   136000UL,   474200UL,   1836600UL,  3568600UL,
@@ -96,19 +124,39 @@ const uint32_t wsprBaseFrq[] = {
   21094600UL, 24924600UL, 28124600UL, 50293000UL, 144489000UL
 };
 
-const uint16_t wsprToneSep = round(1000UL * 12000 / 8192);  // 1.4648 Hz (stored as mHz)
-const uint16_t wsprToneDur = round(1000UL * 8192 / 12000);  // 683 ms per symbol
+/**
+ * WSPR tone spacing and symbol duration derived from the protocol constants.
+ *
+ * WSPR uses 4-FSK with:
+ *   Symbol rate  = 12000 / 8192 ≈ 1.4648 baud
+ *   Tone spacing = symbol rate  ≈ 1.4648 Hz
+ *   Symbol duration = 1 / symbol_rate ≈ 683 ms
+ *
+ * wsprToneSep is stored in mHz (millihertz) to avoid floating-point in the
+ * frequency calculation inner loop.
+ * wsprToneDur is stored in ms.
+ */
+const uint16_t wsprToneSep = round(1000UL * 12000 / 8192);  // 1464.8 mHz ≈ 1.4648 Hz
+const uint16_t wsprToneDur = round(1000UL * 8192 / 12000);  // 682.7 ms
 
-uint8_t  txBuf[WSPR_SYMBOL_COUNT];
-JTEncode JT;
+uint8_t  txBuf[WSPR_SYMBOL_COUNT];  // encoded 4-FSK symbol buffer (162 symbols)
+JTEncode JT;                        // JTEncode instance for wspr_encode()
 
-// Current band (HAM_BANDS index, 1-14); 0 = no band enabled
+// Current band index (HAM_BANDS, 1-14); 0 = no band selected
 uint8_t  curBand = 0;
-// Transmission scheduling
+// Absolute millis() timestamp for the next scheduled TX; 0 = not yet scheduled
 uint32_t nextTX  = 0UL;
+// Number of TX slots fired since the last GPS-disciplined resync
 uint8_t  countTX = 0;
 
-/** Advance curBand to the next enabled band in cfg.bands, wrapping around. */
+/**
+ * Advance curBand to the next enabled band in cfg.bands, wrapping around.
+ *
+ * Iterates forward through band indices 1-14, starting just after curBand,
+ * and stops at the first band whose bit is set in cfg.bands.  If no bands
+ * are enabled (cfg.bands == 0) or only the current band is set, curBand is
+ * set to 0 (BAND_OFF).
+ */
 void advanceBand() {
   if (!cfg.bands) { curBand = 0; return; }
   for (int i = 1; i <= 14; i++) {
@@ -118,7 +166,23 @@ void advanceBand() {
   curBand = 0;
 }
 
-/** Transmit encoded WSPR symbols on band (1-14) at a random offset within the WSPR channel. */
+/**
+ * Transmit the pre-encoded WSPR symbol buffer on the given band.
+ *
+ * Picks a random starting offset within the 200 Hz WSPR channel to reduce
+ * collisions with other beacons on the same band:
+ *   wsprChanFrq = 1400 + (5..29) × tone_spacing  (Hz above dial frequency)
+ *
+ * Then clocks out all 162 symbols back-to-back, each held for wsprToneDur ms.
+ * The Si5351 CLK2 output is enabled for the duration and disabled afterwards.
+ * The LED is set to LED_TX while transmitting and restored to LED_IDLE on exit.
+ *
+ * Timing: uses a running nextSym timestamp incremented by wsprToneDur on each
+ * symbol, then busy-waits until millis() reaches it.  This keeps symbol timing
+ * accurate even if setFreq() takes a variable amount of time.
+ *
+ * Total transmission time: 162 × 683 ms ≈ 110.6 seconds.
+ */
 void transmit(uint8_t band = 0) {
   uint32_t nextSym;
   float wsprChanFrq = 1400 + (random(25) + 5) * (4.0 * 12000UL / 8192);
@@ -142,7 +206,23 @@ void transmit(uint8_t band = 0) {
 
 // ── entropy ──────────────────────────────────────────────────────────────────
 
-/** Sample analog noise on A0 to produce numBits bits of entropy for randomSeed(). */
+/**
+ * Collect numBits bits of hardware entropy from ADC noise on pin A0.
+ *
+ * Algorithm (per bit):
+ *   Repeat hashIterations times:
+ *     1. Delay a variable interval derived from the previous ADC reading
+ *        (introduces timing jitter).
+ *     2. Read A0 (floating, driven only by thermal/quantisation noise).
+ *     3. XOR the LSB of the reading into tempBit.
+ *   Store the final tempBit LSB as one entropy bit in result.
+ *
+ * The variable delay (reading % sampleSignificant × sampleMultiplier ms)
+ * breaks correlation between successive samples by making the sampling instant
+ * depend on the noise itself.
+ *
+ * Returns a long suitable for passing directly to randomSeed().
+ */
 long getRandomSeed(int numBits = 31) {
   if (numBits > 31 || numBits < 1) numBits = 31;
   const int  baseIntervalMs    = 1;
@@ -170,7 +250,29 @@ long getRandomSeed(int numBits = 31) {
 }
 
 // ── setup ────────────────────────────────────────────────────────────────────
-/** Initialize Serial, GPS, Si5351, load config, and open the boot config window. */
+
+/**
+ * One-time initialisation: hardware, config, and pre-flight checks.
+ *
+ * Sequence:
+ *   1. Open Serial at 115200 baud and print the firmware banner.
+ *   2. Initialise GPS serial port; set LED_FAULT if no module is detected.
+ *   3. Initialise Si5351; apply stored calibration correction; set LED_FAULT
+ *      if the chip does not respond on I²C.
+ *   4. Seed the PRNG from ADC noise.
+ *   5. Load configuration from EEPROM (writes defaults on first boot).
+ *   6. Copy cfg.locator into the working loc[] buffer used by gpsUpdate()
+ *      and transmit(); GPS will overwrite this when a fix is obtained and
+ *      cfg.locator is empty.
+ *   7. Select the first enabled band.
+ *   8. Print a config summary.
+ *   9. Open a 5-second boot-time config window; any serial keypress launches
+ *      the interactive TUI.
+ *  10. Enforce a valid callsign — loop in the TUI until one is set.
+ *  11. If GPS is absent and no locator is stored, loop in the TUI until a
+ *      locator is entered (without a position there is nothing to transmit).
+ *  12. Print the appropriate "Waiting for GPS…" message and return.
+ */
 void setup() {
   Serial.begin(115200);
 
@@ -208,21 +310,21 @@ void setup() {
   // Load config from EEPROM (or defaults on first boot)
   configLoad();
 
-  // Initialize working locator from stored config; GPS will override if empty
+  // Initialise working locator from stored config; GPS will override if empty
   strncpy(loc, cfg.locator, sizeof(loc));
 
-  // Set to first enabled band
+  // Select the first enabled band
   advanceBand();
 
   // Print config summary so the user knows what will be transmitted
   configSummary();
 
-  // Boot-time config window (optional, 5-second window)
+  // 5-second boot window: any keypress opens the interactive config TUI
   Serial.println(F("Press any key for configuration..."));
   uint32_t deadline = millis() + 5000UL;
   while (millis() < deadline) {
     if (Serial.available()) {
-      while (Serial.available()) Serial.read();
+      while (Serial.available()) Serial.read();  // discard the trigger byte(s)
       configTUI();
       strncpy(loc, cfg.locator, sizeof(loc));
       curBand = 0; advanceBand(); nextTX = 0;
@@ -230,7 +332,7 @@ void setup() {
     }
   }
 
-  // Require a real callsign — loop until one is set
+  // Enforce a real callsign — N0CALL is the factory default placeholder
   while (cfg.callsign[0] == '\0' || strcmp(cfg.callsign, "N0CALL") == 0) {
     Serial.println(F("Callsign not set. Please configure."));
     configTUI();
@@ -238,7 +340,8 @@ void setup() {
     curBand = 0; advanceBand(); nextTX = 0;
   }
 
-  // Require a locator when GPS is unavailable — loop until one is set
+  // Without GPS and without a stored locator there is no position to encode —
+  // keep the user in the TUI until a locator is manually entered
   if (!gpsDetected && cfg.locator[0] == '\0') {
     Serial.println(F("No GPS detected and no locator set. Please configure."));
     while (cfg.locator[0] == '\0') {
@@ -255,7 +358,39 @@ void setup() {
 }
 
 // ── loop ─────────────────────────────────────────────────────────────────────
-/** Check TX timing, read GPS, and schedule the next transmission window. */
+
+/**
+ * Main beacon loop: transmit on schedule, track GPS time, and resync.
+ *
+ * Called repeatedly by the Arduino runtime.  Each iteration:
+ *
+ *   1. ledUpdate() — maintain the non-blocking LED blink pattern.
+ *
+ *   2. TX gate — if a locator is available, nextTX is set, and the current
+ *      time has passed nextTX, fire a transmission:
+ *        - Advance nextTX by decimation × 120 s (next scheduled slot).
+ *        - Encode callsign / locator / power into txBuf via wspr_encode().
+ *        - Call transmit() for the current band (~110 s blocking call).
+ *        - Advance to the next enabled band and increment countTX.
+ *
+ *   3. gpsUpdate() — poll the GPS for 1 s; returns seconds to the next
+ *      even-minute WSPR slot, or -1 if no valid time.
+ *        - rem >= 0: GPS time is valid → restore LED_IDLE if it was LED_NO_FIX.
+ *        - rem < 0:  GPS time lost → cancel nextTX, reset countTX, set
+ *          LED_NO_FIX.  The "GPS time lost" message is printed only once
+ *          (guarded by nextTX > 0).
+ *
+ *   4. Locator auto-save — once per boot, if the GPS-derived loc[] differs
+ *      from the stored cfg.locator, write it to EEPROM so future cold starts
+ *      can transmit without waiting for a position fix.
+ *
+ *   5. TX scheduling — resync nextTX from GPS time when:
+ *        - nextTX == 0 (no schedule yet, or just lost/regained GPS time), OR
+ *        - countTX × decimation >= 30 (periodic resync every ~30 slots to
+ *          prevent millis() drift from accumulating over long sessions).
+ *      nextTX is set to millis() + (rem + 1) × 1000 ms, placing the TX start
+ *      1 second after the slot boundary to account for GPS sentence latency.
+ */
 void loop() {
   ledUpdate();
 
@@ -299,8 +434,8 @@ void loop() {
     locatorSaved = true;
   }
 
-  // Schedule the next transmission window if we have a valid time and
-  // either no previous schedule or we've reached the decimation count
+  // Resync TX schedule from GPS time when there is no schedule or after
+  // enough slots have elapsed to correct any accumulated millis() drift
   if (rem >= 0 && (nextTX == 0 || countTX * cfg.decimation >= 30)) {
     nextTX  = millis() + (rem + 1) * 1000UL;
     countTX = 0;

@@ -12,34 +12,78 @@
 #pragma once
 #include <Arduino.h>
 
-// Bump this when the Config struct layout changes — all devices will reset to defaults
+/**
+ * Magic number written at EEPROM address 0-1 to mark a valid config block.
+ * Bump this value whenever the Config struct layout changes — mismatched magic
+ * causes configLoad() to discard EEPROM contents and write factory defaults.
+ *
+ * EEPROM layout:
+ *   0x0000-0x0001  CONFIG_MAGIC (uint16_t)
+ *   0x0002-…       Config struct (CONFIG_ADDR)
+ */
 #define CONFIG_MAGIC 0xAB02
-#define CONFIG_ADDR  2      // magic lives at 0-1, struct starts here
+#define CONFIG_ADDR  2
 
-// bands bitmask: bit N = HAM_BANDS enum value N is enabled (bits 1-14 valid)
-// Default: 40m (bit 6) | 20m (bit 8) | 15m (bit 10)
+/**
+ * Default enabled-bands bitmask for cfg.bands.
+ * Bit N corresponds to HAM_BANDS enum value N (bits 1-14 are valid).
+ * Default: 40 m (bit 6), 20 m (bit 8), 15 m (bit 10).
+ */
 #define BANDS_DEFAULT ((1 << 6) | (1 << 8) | (1 << 10))
 
+/**
+ * Persistent beacon configuration, stored verbatim in EEPROM at CONFIG_ADDR.
+ *
+ * Fields:
+ *   callsign    — amateur radio callsign, NUL-terminated, up to 9 chars.
+ *   locator     — Maidenhead grid square (4 or 6 chars + NUL).
+ *                 Empty string means derive the locator from GPS position.
+ *   dbm         — TX power in dBm (0-60); encoded into the WSPR message.
+ *   decimation  — transmit every Nth WSPR slot (1 = every 2-minute slot).
+ *   bands       — bitmask of enabled HAM_BANDS values; bit N set = band N active.
+ *   calibration — Si5351 crystal frequency correction in Hz (signed).
+ *                 Applied at startup via DDS.setCorrection(); 0 = no correction.
+ */
 struct Config {
   char     callsign[10];
-  char     locator[7];   // empty string = use GPS
+  char     locator[7];
   uint8_t  dbm;
   uint8_t  decimation;
   uint16_t bands;
-  int32_t  calibration;  // Si5351 frequency correction (Hz); 0 = no correction
+  int32_t  calibration;
 };
 
+/** Active configuration; loaded from EEPROM by configLoad(). */
 extern Config cfg;
 
-/** Return the name string for a HAM_BANDS index (0-14). */
+/** Return the display name string for a HAM_BANDS index (0-14); 0 → "OFF". */
 const char* getBandName(uint8_t band);
-/** Print a one-screen config summary (callsign, power, locator, bands, decimation). */
+
+/** Print a one-line-per-field summary of cfg to Serial. */
 void configSummary();
-/** Reset cfg to built-in defaults. */
+
+/** Reset cfg to built-in factory defaults (does not write to EEPROM). */
 void configDefaults();
-/** Load cfg from EEPROM; writes defaults if the magic number is missing. */
+
+/**
+ * Load cfg from EEPROM.
+ * If the magic number is absent or mismatched, writes factory defaults to EEPROM
+ * and uses them for this session.  Also sanitises loaded values to guard against
+ * struct layout changes or flash corruption.
+ */
 void configLoad();
-/** Write cfg and magic number to EEPROM. */
+
+/**
+ * Write the current cfg and CONFIG_MAGIC to EEPROM.
+ * Uses EEPROM.put() which only erases/writes bytes that have changed, preserving
+ * EEPROM endurance.
+ */
 void configSave();
-/** Run the interactive serial configuration menu. */
+
+/**
+ * Run the interactive serial configuration TUI.
+ * Presents a numbered menu, reads single-character choices, dispatches to field
+ * editors, and returns when the user selects Save (S) or Quit (Q).
+ * Serial timeout is set to 30 s so the loop does not block indefinitely.
+ */
 void configTUI();

@@ -42,13 +42,47 @@ extern volatile GPRMCData gpsData;
  */
 extern char loc[7];
 
-/** Open the GPS software serial port at 9600 baud; returns true if any byte is received within 1 s. */
+/**
+ * Initialise the GPS software serial port at 9600 baud and detect the module.
+ *
+ * Opens SoftwareSerial on the configured RX/TX pins and listens for up to 1 s.
+ * Any byte received within that window is sufficient to confirm the GPS module
+ * is powered and transmitting — full sentence parsing is not required here.
+ *
+ * Returns true if the module was detected, false if no data arrived within 1 s.
+ * The serial port remains open regardless; gpsUpdate() can be called either way.
+ */
 bool gpsInit();
 
 /**
- * Poll the GPS serial port for 1 second, parse incoming $GPRMC sentences,
- * update gpsData and loc[], and print a status line on new data.
- * Returns seconds until the next even-minute WSPR TX slot, or -1 if no valid time.
+ * Poll the GPS serial port for exactly 1 second, parse $GPRMC sentences, and
+ * return the time remaining until the next WSPR TX slot.
+ *
+ * Each call blocks for 1 s, consuming all available bytes and feeding them
+ * through the character-level parseGPRMC() state machine.  If no complete
+ * sentence is received during that window, returns -1 immediately.
+ *
+ * When new data arrives:
+ *   - Position fix (gpsData.valid + non-zero lat/lon):
+ *       Converts raw DDMMmmmm integers to decimal degrees and, if no fixed
+ *       locator is configured in EEPROM (cfg.locator empty), recomputes loc[]
+ *       via getLocator().  Prints "GPS fix acquired!" once on the fix→no-fix
+ *       transition edge.
+ *   - Time (gpsData.time > 0):
+ *       Decodes HHMMSS into hours/minutes/seconds, computes the remainder to
+ *       the next even-minute WSPR slot boundary, and prints "GPS time acquired:
+ *       HH:MM:SS UTC" once on the no-time→time transition edge.
+ *   - Status line printed every call:
+ *       Full fix  → "GPS: lat,lon  locator  HH:MM:SS UTC  next slot: Ns"
+ *       Time only → "GPS: HH:MM:SS UTC  loc: locator  next slot: Ns"
+ *       No data   → "GPS: no fix  [HH:MM:SS UTC]"
+ *
+ * WSPR slot timing:
+ *   Slots start at second :00 of every even UTC minute (0, 2, 4, …).
+ *   rem = (even minute ? 120 : 60) − current_second
+ *   This gives the number of seconds until the next slot boundary.
+ *
+ * Returns seconds to the next WSPR TX slot (≥ 0), or -1 if no valid time.
  */
 int gpsUpdate();
 

@@ -14,7 +14,7 @@
 
 Config cfg;
 
-// Band names indexed by HAM_BANDS enum value (0=OFF, 1=2190m ... 14=2m)
+// Band names indexed by HAM_BANDS enum value (0=OFF, 1=2190m … 14=2m)
 static const char* const bandName[] = {
   "OFF",
   "2190m", "630m",  "160m", "80m",  "60m",
@@ -24,7 +24,18 @@ static const char* const bandName[] = {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-/** Read a line from Serial with echo and backspace support; returns char count. */
+/**
+ * Read one line of input from Serial into buf (at most maxLen chars + NUL).
+ *
+ * Behaviour:
+ *   - Blocks until CR or LF is received.
+ *   - CR is consumed; a trailing LF immediately following a CR is also discarded
+ *     so that \r\n line endings from Windows terminals work cleanly.
+ *   - Printable characters (≥ 0x20) are echoed and appended up to maxLen.
+ *   - Backspace (0x08) and DEL (0x7F) erase the last character with a
+ *     "backspace–space–backspace" sequence.
+ *   - Returns the number of characters stored (not counting the NUL terminator).
+ */
 static uint8_t readLine(char *buf, uint8_t maxLen) {
   uint8_t i = 0;
   while (true) {
@@ -50,7 +61,7 @@ static uint8_t readLine(char *buf, uint8_t maxLen) {
   return i;
 }
 
-/** Print the enabled band names from cfg.bands, or "none". */
+/** Print the names of all enabled bands from cfg.bands, space-separated, or "none". */
 static void printBands() {
   bool any = false;
   for (uint8_t b = 1; b <= 14; b++) {
@@ -84,7 +95,11 @@ static void showConfig() {
 
 // ── field editors ────────────────────────────────────────────────────────────
 
-/** Prompt for a new callsign and update cfg.callsign. */
+/**
+ * Prompt for a new callsign (up to 9 chars) and store it upper-cased in
+ * cfg.callsign.  Input is rejected silently if the user presses Enter with no
+ * characters, leaving the existing value unchanged.
+ */
 static void editCallsign() {
   char buf[10];
   Serial.print(F("Callsign ["));
@@ -97,7 +112,11 @@ static void editCallsign() {
   }
 }
 
-/** Prompt for TX power in dBm (0-60) and update cfg.dbm. */
+/**
+ * Prompt for TX power in dBm and update cfg.dbm.
+ * Valid range: 0-60 (WSPR encodes power in 3-dB steps; arbitrary values are
+ * accepted here and rounded by the encoder).  Out-of-range input is rejected.
+ */
 static void editPower() {
   char buf[4];
   Serial.print(F("Power dBm (0-60) ["));
@@ -112,7 +131,12 @@ static void editPower() {
   }
 }
 
-/** Prompt for a 4- or 6-character Maidenhead locator, or empty to use GPS. */
+/**
+ * Prompt for a Maidenhead grid locator and update cfg.locator.
+ * Accepts 4-character (grid square) or 6-character (grid subsquare) input,
+ * forced to upper case.  An empty entry clears cfg.locator, reverting to
+ * GPS-derived position.  Any other length is rejected.
+ */
 static void editLocator() {
   char buf[7];
   Serial.print(F("Locator (4 or 6 chars, empty = GPS) ["));
@@ -130,7 +154,12 @@ static void editLocator() {
   }
 }
 
-/** Prompt for TX decimation (1-99 TX intervals) and update cfg.decimation. */
+/**
+ * Prompt for the TX decimation factor and update cfg.decimation.
+ * Decimation N means transmit once every N consecutive WSPR slots (each slot
+ * is 2 minutes), so N=1 transmits every slot, N=2 every 4 minutes, etc.
+ * Valid range: 1-99.
+ */
 static void editDecimation() {
   char buf[4];
   Serial.print(F("Decimation 1-99 ["));
@@ -145,7 +174,15 @@ static void editDecimation() {
   }
 }
 
-/** Prompt for Si5351 frequency calibration correction in Hz and update cfg.calibration. */
+/**
+ * Prompt for the Si5351 frequency calibration correction and update cfg.calibration.
+ *
+ * The correction is a signed integer in Hz added to (or subtracted from) the
+ * nominal crystal frequency before computing PLL multipliers.  Determine the
+ * value by comparing the beacon's actual output frequency (measured with an
+ * accurate receiver or SDR) against the expected WSPR dial frequency and
+ * entering the difference here.  Valid range: ±999999 Hz.
+ */
 static void editCalibration() {
   char buf[8];
   Serial.print(F("Calibration Hz [-999999..999999] ["));
@@ -160,7 +197,13 @@ static void editCalibration() {
   }
 }
 
-/** Interactively toggle enabled bands in cfg.bands. */
+/**
+ * Interactively toggle enabled bands in cfg.bands.
+ * Prints the full band list with current on/off state, then reads band numbers
+ * one at a time, toggling the corresponding bit in cfg.bands.  Enter 0 to
+ * finish.  Changes take effect in cfg immediately but are not saved to EEPROM
+ * until configSave() is called.
+ */
 static void editBands() {
   Serial.println(F("\r\nAvailable bands:"));
   for (uint8_t b = 1; b <= 14; b++) {
@@ -198,13 +241,13 @@ const char* getBandName(uint8_t band) {
 }
 
 void configSummary() {
-  Serial.print(F("Callsign  : ")); Serial.println(cfg.callsign);
-  Serial.print(F("Power     : ")); Serial.print(cfg.dbm); Serial.println(F(" dBm"));
-  Serial.print(F("Locator   : "));
+  Serial.print(F("Callsign   : ")); Serial.println(cfg.callsign);
+  Serial.print(F("Power      : ")); Serial.print(cfg.dbm); Serial.println(F(" dBm"));
+  Serial.print(F("Locator    : "));
   if (cfg.locator[0]) Serial.println(cfg.locator);
   else                Serial.println(F("(from GPS)"));
-  Serial.print(F("Bands     : ")); printBands(); Serial.println();
-  Serial.print(F("Decimation: ")); Serial.println(cfg.decimation);
+  Serial.print(F("Bands      : ")); printBands(); Serial.println();
+  Serial.print(F("Decimation : ")); Serial.println(cfg.decimation);
   Serial.print(F("Calibration: ")); Serial.print(cfg.calibration); Serial.println(F(" Hz"));
 }
 
@@ -221,15 +264,19 @@ void configLoad() {
   uint16_t magic;
   EEPROM.get(0, magic);
   if (magic != CONFIG_MAGIC) {
+    // No valid config block — first boot or struct layout changed.
+    // Write defaults so future boots find a valid magic number.
     configDefaults();
     configSave();
   } else {
     EEPROM.get(CONFIG_ADDR, cfg);
-    // Guard against junk data from a struct layout change or flash corruption
+    // Sanitise string fields: ensure NUL termination in case the stored bytes
+    // were written by an older firmware with a shorter field.
     cfg.callsign[sizeof(cfg.callsign) - 1] = '\0';
     cfg.locator[sizeof(cfg.locator) - 1]   = '\0';
-    if (cfg.decimation == 0)  cfg.decimation = 1;
-    if (cfg.dbm > 60)         cfg.dbm = 10;
+    // Clamp numeric fields to valid ranges; 0/out-of-range indicates corruption.
+    if (cfg.decimation == 0) cfg.decimation = 1;
+    if (cfg.dbm > 60)        cfg.dbm = 10;
   }
 }
 
@@ -254,8 +301,8 @@ void configTUI() {
       case '1': editCallsign();   break;
       case '2': editPower();      break;
       case '3': editLocator();    break;
-      case '4': editDecimation();  break;
-      case '5': editBands();       break;
+      case '4': editDecimation(); break;
+      case '5': editBands();      break;
       case '6': editCalibration(); break;
       case 'S': configSave();     return;
       case 'Q':                   return;
