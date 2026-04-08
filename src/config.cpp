@@ -75,6 +75,7 @@ static void showConfig() {
   else                Serial.println(F("(from GPS)"));
   Serial.print(F("  4. Decimation : ")); Serial.println(cfg.decimation);
   Serial.print(F("  5. Bands      : ")); printBands(); Serial.println();
+  Serial.print(F("  6. Calibration: ")); Serial.print(cfg.calibration); Serial.println(F(" Hz"));
   Serial.println(F("--------------------------------"));
   Serial.println(F("  S. Save and exit"));
   Serial.println(F("  Q. Quit without saving"));
@@ -144,6 +145,21 @@ static void editDecimation() {
   }
 }
 
+/** Prompt for Si5351 frequency calibration correction in Hz and update cfg.calibration. */
+static void editCalibration() {
+  char buf[8];
+  Serial.print(F("Calibration Hz [-999999..999999] ["));
+  Serial.print(cfg.calibration);
+  Serial.print(F("]: "));
+  if (readLine(buf, 7) > 0) {
+    long v = atol(buf);
+    if (v >= -999999L && v <= 999999L)
+      cfg.calibration = (int32_t)v;
+    else
+      Serial.println(F("Out of range, unchanged."));
+  }
+}
+
 /** Interactively toggle enabled bands in cfg.bands. */
 static void editBands() {
   Serial.println(F("\r\nAvailable bands:"));
@@ -189,14 +205,16 @@ void configSummary() {
   else                Serial.println(F("(from GPS)"));
   Serial.print(F("Bands     : ")); printBands(); Serial.println();
   Serial.print(F("Decimation: ")); Serial.println(cfg.decimation);
+  Serial.print(F("Calibration: ")); Serial.print(cfg.calibration); Serial.println(F(" Hz"));
 }
 
 void configDefaults() {
   strncpy(cfg.callsign, "N0CALL", sizeof(cfg.callsign));
   cfg.locator[0] = '\0';
-  cfg.dbm        = 10;
-  cfg.decimation = 1;
-  cfg.bands      = BANDS_DEFAULT;
+  cfg.dbm         = 10;
+  cfg.decimation  = 1;
+  cfg.bands       = BANDS_DEFAULT;
+  cfg.calibration = 0;
 }
 
 void configLoad() {
@@ -236,8 +254,9 @@ void configTUI() {
       case '1': editCallsign();   break;
       case '2': editPower();      break;
       case '3': editLocator();    break;
-      case '4': editDecimation(); break;
-      case '5': editBands();      break;
+      case '4': editDecimation();  break;
+      case '5': editBands();       break;
+      case '6': editCalibration(); break;
       case 'S': configSave();     return;
       case 'Q':                   return;
       default:  Serial.println(F("Unknown option.")); break;

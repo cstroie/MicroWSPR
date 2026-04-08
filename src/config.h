@@ -13,7 +13,7 @@
 #include <Arduino.h>
 
 // Bump this when the Config struct layout changes — all devices will reset to defaults
-#define CONFIG_MAGIC 0xAB01
+#define CONFIG_MAGIC 0xAB02
 #define CONFIG_ADDR  2      // magic lives at 0-1, struct starts here
 
 // bands bitmask: bit N = HAM_BANDS enum value N is enabled (bits 1-14 valid)
@@ -26,6 +26,7 @@ struct Config {
   uint8_t  dbm;
   uint8_t  decimation;
   uint16_t bands;
+  int32_t  calibration;  // Si5351 frequency correction (Hz); 0 = no correction
 };
 
 extern Config cfg;

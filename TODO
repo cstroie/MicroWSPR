@@ -1,6 +1,6 @@
 # TODO
 
-- move CALIBRATION to eeprom
+- [x] move CALIBRATION to eeprom
 - update README file
 - update functions documentation and complex code documentation in config.cpp / .h and main.cpp
 - choose CLK0 or CLK1 or CLK2 for output

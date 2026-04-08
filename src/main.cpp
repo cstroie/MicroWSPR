@@ -22,10 +22,6 @@
 #include "gps.h"
 #include "si5351.h"
 
-#ifndef CALIBRATION
-#define CALIBRATION (0)
-#endif
-
 #include <JTEncode.h>
 
 // ── constants ────────────────────────────────────────────────────────────────
@@ -202,9 +198,8 @@ void setup() {
     Serial.println(F("not found!"));
     ledState = LED_FAULT;
   }
-#if CALIBRATION != 0
-  DDS.setCorrection(CALIBRATION, 0);
-#endif
+  if (cfg.calibration != 0)
+    DDS.setCorrection(cfg.calibration, 0);
   DDS.driveStrength(2, 2);  // strength: 0=2mA, 1=4mA, 2=6mA, 3=8mA
   DDS.outputEnable(2, 0);
 
