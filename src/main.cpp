@@ -253,7 +253,10 @@ void setup() {
     curBand = 0; advanceBand(); nextTX = 0;
   }
 
-  Serial.println(F("Waiting for GPS..."));
+  if (cfg.locator[0])
+    Serial.println(F("Waiting for GPS time..."));
+  else
+    Serial.println(F("Waiting for GPS fix..."));
 }
 
 // ── loop ─────────────────────────────────────────────────────────────────────
@@ -279,8 +282,18 @@ void loop() {
   }
 
   int rem = gpsUpdate();
-  if (rem >= 0 && ledState == LED_NO_FIX)
-    ledState = LED_IDLE;
+  if (rem >= 0) {
+    if (ledState == LED_NO_FIX)
+      ledState = LED_IDLE;
+  } else {
+    // GPS time lost — cancel schedule and signal no-fix until time returns
+    if (nextTX > 0) {
+      Serial.println(F("GPS time lost, TX suspended."));
+      nextTX = 0;
+      countTX = 0;
+    }
+    ledState = LED_NO_FIX;
+  }
 
   // Auto-save GPS-derived locator once per boot if it differs from stored value
   static bool locatorSaved = false;
@@ -290,6 +303,9 @@ void loop() {
     configSave();
     locatorSaved = true;
   }
+
+  // Schedule the next transmission window if we have a valid time and
+  // either no previous schedule or we've reached the decimation count
   if (rem >= 0 && (nextTX == 0 || countTX * cfg.decimation >= 30)) {
     nextTX  = millis() + (rem + 1) * 1000UL;
     countTX = 0;

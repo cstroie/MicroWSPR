@@ -61,6 +61,9 @@ static bool parseGPRMC(char c) {
   static uint8_t hdrIdx = 0;     // index into "GPRMC" header
   static long    acc    = 0;     // digit accumulator
 
+ //Serial.print(F("Field: "));
+ //Serial.println(field);
+
   // '$' resets the state machine unconditionally — start of a new sentence
   if (c == '$') { field = 0; pos = 0; hdrIdx = 0; acc = 0; return false; }
   if (field == 0xFF) return false;
@@ -88,6 +91,7 @@ static bool parseGPRMC(char c) {
       if (c != '.' && pos < 6 && c >= '0' && c <= '9') { acc = acc * 10 + (c - '0'); pos++; }
       break;
     case 2:  // fix validity: 'A' = active (valid), 'V' = void (no fix)
+      //if (pos == 0) { gpsData.valid = (c == 'A'); pos++; }
       if (pos == 0) { gpsData.valid = (c == 'A'); pos++; }
       break;
     case 3:  // latitude DDMM.MMMM → accumulate all digits, skip decimal point
@@ -99,6 +103,14 @@ static bool parseGPRMC(char c) {
       break;
     case 6:  // longitude hemisphere: 'E' or 'W' — last field needed; signal completion
       if (pos == 0) { gpsData.lon_ew = c; return true; }
+      break;
+    case 7:
+    case 8:
+    case 9:
+    case 10:
+    case 11:
+    case 12:
+      return true;  // we don't care about any fields after 6, but we need to consume them until the line ends
       break;
   }
   return false;
@@ -120,6 +132,7 @@ int gpsUpdate() {
   for (unsigned long start = millis(); millis() - start < 1000;) {
     while (SoftSerial.available()) {
       char c = SoftSerial.read();
+      //Serial.print(c);  // echo GPS data to Serial for debugging; comment out if not needed
       if (parseGPRMC(c))
         newData = true;
     }
@@ -128,12 +141,14 @@ int gpsUpdate() {
   if (!newData)
     return -1;
 
-  // hadFix tracks the fix→no-fix→fix transition to print the "acquired" banner once
-  static bool hadFix = false;
+  // hadFix/hadTime track transitions to print "acquired" banners once
+  static bool hadFix  = false;
+  static bool hadTime = false;
 
   // Convert raw lat/lon integers to decimal degrees
   float lat = 0.0, lon = 0.0;
-  bool hasFix = gpsData.valid && gpsData.lat != 0 && gpsData.lon != 0;
+  bool hasFix  = gpsData.valid && gpsData.lat != 0 && gpsData.lon != 0;
+  bool hasTime = gpsData.time > 0;
 
   if (hasFix) {
     // Raw format: DDMMmmmm (decimal point stripped from DDMM.MMMM)
@@ -143,7 +158,7 @@ int gpsUpdate() {
     if (gpsData.lat_ns == 'S') lat = -lat;
     lon = (float)(gpsData.lon / 1000000L) + (float)(gpsData.lon % 1000000L) / 600000.0f;
     if (gpsData.lon_ew == 'W') lon = -lon;
-    // Derive Maidenhead locator from GPS position when no fixed locator is configured
+    // Derive Maidenhead locator from GPS position only when no fixed locator is configured
     if (!cfg.locator[0])
       getLocator(loc, lat, lon);
     if (!hadFix) {
@@ -160,13 +175,21 @@ int gpsUpdate() {
   // If the current minute is odd, it is only 60-second seconds away.
   int rem = -1;
   char timebuf[9] = "";  // formatted as "HH:MM:SS"
-  if (gpsData.valid && gpsData.time > 0) {
+  if (hasTime) {
     uint32_t t     = gpsData.time;
     uint8_t hour   = t / 10000;
     uint8_t minute = (t / 100) % 100;
     uint8_t second = t % 100;
     rem = (int)(((minute % 2 == 0) ? 120 : 60) - second);
     sprintf(timebuf, "%02d:%02d:%02d", hour, minute, second);
+    if (!hadTime) {
+      Serial.print(F("GPS time acquired: "));
+      Serial.print(timebuf);
+      Serial.println(F(" UTC"));
+      hadTime = true;
+    }
+  } else {
+    hadTime = false;
   }
 
   // Print status line
@@ -178,6 +201,11 @@ int gpsUpdate() {
       Serial.print(F("  ")); Serial.print(timebuf); Serial.print(F(" UTC"));
       Serial.print(F("  next slot: ")); Serial.print(rem); Serial.print('s');
     }
+  } else if (hasTime && loc[0]) {
+    // Time acquired and locator available from EEPROM — no position fix needed
+    Serial.print(F("GPS: ")); Serial.print(timebuf); Serial.print(F(" UTC"));
+    Serial.print(F("  loc: ")); Serial.print(loc);
+    Serial.print(F("  next slot: ")); Serial.print(rem); Serial.print('s');
   } else {
     Serial.print(F("GPS: no fix"));
     if (timebuf[0]) {
