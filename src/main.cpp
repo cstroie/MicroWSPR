@@ -20,13 +20,13 @@
 #include <Arduino.h>
 #include "config.h"
 #include "gps.h"
+#include "si5351.h"
 
 #ifndef CALIBRATION
 #define CALIBRATION (0)
 #endif
 
 #include <JTEncode.h>
-#include <Wire.h>
 
 // ── constants ────────────────────────────────────────────────────────────────
 
@@ -40,115 +40,6 @@ enum HAM_BANDS {
   BAND_80,   BAND_60,   BAND_40,  BAND_30,  BAND_20,
   BAND_17,   BAND_15,   BAND_12,  BAND_10,  BAND_6,   BAND_2
 };
-
-// ── Si5351 ───────────────────────────────────────────────────────────────────
-
-/**
- * Minimal Si5351 driver: Integer-N PLL mode for WSPR tone generation on CLK2.
- * Saves ~10 KB flash vs the full library by dropping fractional-N math.
- */
-#define SI5351_ADDR 0x60
-#define F_XTAL 25004000UL
-
-class SI5351 {
-private:
-  volatile int32_t _fout;
-  volatile uint8_t _div;
-  volatile uint16_t _msa128min512;
-  volatile uint32_t _msb128;
-  int16_t iqmsa;
-  uint32_t fxtal;
-  #define _MSC 0x80000
-
-  /** Write a byte to a Si5351 register. */
-  void sendRegister(uint8_t reg, uint8_t val) {
-    Wire.beginTransmission(SI5351_ADDR);
-    Wire.write(reg);
-    Wire.write(val);
-    Wire.endTransmission();
-  }
-
-  /** Write n bytes to consecutive Si5351 registers starting at reg. */
-  void sendRegisterBulk(uint8_t reg, uint8_t* data, uint8_t n) {
-    Wire.beginTransmission(SI5351_ADDR);
-    Wire.write(reg);
-    while (n--) Wire.write(*data++);
-    Wire.endTransmission();
-  }
-
-  /** Read a byte from a Si5351 register. */
-  uint8_t recvRegister(uint8_t reg) {
-    Wire.beginTransmission(SI5351_ADDR);
-    Wire.write(reg);
-    Wire.endTransmission();
-    Wire.requestFrom(SI5351_ADDR, (uint8_t)1);
-    return Wire.read();
-  }
-
-public:
-  /** Initialize Si5351: bring up I2C at 400 kHz and disable all outputs. */
-  bool init(uint8_t, uint32_t, int32_t) {
-    Wire.begin();
-    Wire.setClock(400000UL);
-    sendRegister(3, 0xFF);
-    for (uint8_t i = 0; i < 6; i++) sendRegister(16 + i, 0x80);
-    sendRegister(3, 0xFF);
-    return true;
-  }
-
-  /** Apply frequency correction; corr (Hz) is subtracted from the crystal frequency. */
-  void setCorrection(int32_t corr, uint8_t) {
-    fxtal = F_XTAL - corr;
-  }
-
-  /**
-   * Set output frequency on clk (0-2); only CLK2 is used for WSPR.
-   * Integer-N PLL mode gives adequate precision for WSPR tones with minimal code.
-   */
-  void setFreq(uint32_t fout, uint8_t clk) {
-    uint8_t rdiv = 0;
-    if (fout < 500000) { rdiv = 7; fout *= 128; }
-    uint16_t d = (16 * fxtal) / fout;
-    if (fout > 30000000) d = (34 * fxtal) / fout;
-    if ((d * (fout - 5000) / fxtal) != (d * (fout + 5000) / fxtal)) d--;
-    uint32_t fvcoa = d * fout;
-    uint8_t msa = fvcoa / fxtal;
-    uint32_t msb = ((uint64_t)(fvcoa % fxtal) * _MSC * 128) / fxtal;
-    uint32_t msp1 = 128 * msa + 128 * msb / _MSC - 512;
-    uint32_t msp2 = 128 * msb - 128 * msb / _MSC * _MSC;
-    uint8_t pll_regs[8] = {
-      (uint8_t)((_MSC >> 8) & 0xFF),
-      (uint8_t)(_MSC & 0xFF),
-      (uint8_t)(msp1 >> 16),
-      (uint8_t)(msp1 >> 8),
-      (uint8_t)(msp1),
-      (uint8_t)(((_MSC >> 12) & 0xF0) | (msp2 >> 16)),
-      (uint8_t)(msp2 >> 8),
-      (uint8_t)(msp2)
-    };
-    sendRegisterBulk(34, pll_regs, 8);  // PLLB only (CLK2 uses PLLB per reg 18)
-    msp1 = (128 * msa - 512) | (((uint32_t)rdiv) << 20);
-    uint8_t ms_regs[8] = {0, 1, (uint8_t)(msp1 >> 16), (uint8_t)(msp1 >> 8), (uint8_t)(msp1), 0, 0, 0};
-    sendRegisterBulk(58, ms_regs, 8);   // MS2 only (42+16, CLK2)
-    sendRegister(18, 0x6C);             // CLK2: PLLB, integer mode, inverted, 6mA
-    if (iqmsa != msa) { iqmsa = msa; sendRegister(177, 0xA0); }
-    _fout = fout; _div = d; _msa128min512 = msa * 128 - 512; _msb128 = msb;
-  }
-
-  /** Enable (1) or disable (0) clock output clk (0-2). */
-  void outputEnable(uint8_t clk, uint8_t enable) {
-    if (enable) sendRegister(3, ~(1 << clk));  // clear bit → enable output
-    else        sendRegister(3, 0xFF);          // all bits set → all disabled
-  }
-
-  /** Set drive strength for clk (0-2): 0=2mA, 1=4mA, 2=6mA, 3=8mA. */
-  void driveStrength(uint8_t clk, uint8_t strength) {
-    uint8_t val = recvRegister(16 + clk);
-    sendRegister(16 + clk, (val & 0xF9) | (strength << 1));
-  }
-};
-
-SI5351 DDS;
 
 // ── WSPR ─────────────────────────────────────────────────────────────────────
 
