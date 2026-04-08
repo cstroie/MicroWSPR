@@ -12,27 +12,48 @@
 #pragma once
 #include <Arduino.h>
 
-/** Parsed fields from a $GPRMC NMEA sentence. */
+/**
+ * Parsed fields extracted from a $GPRMC NMEA sentence.
+ *
+ * $GPRMC sentence format (fields separated by commas):
+ *   $GPRMC,HHMMSS.ss,A,DDMM.MMMM,N,DDDMM.MMMM,E,spd,crs,DDMMYY,,,*CS
+ *   field:  1=time    2 3=lat      4  5=lon       6
+ *
+ * Only fields 1-6 are captured; speed, course and date are ignored for WSPR.
+ */
 struct GPRMCData {
-  uint32_t time;       // HHMMSS as 6-digit integer (HH*10000 + MM*100 + SS)
-  uint32_t date;       // DDMMYY
-  long lat;            // Raw DDMM.MMMM digits (decimal stripped); to degrees: (lat/1000000) + (lat%1000000)/600000.0
-  long lon;            // Raw DDDMM.MMMM digits; same conversion
-  char lat_ns;         // N or S
-  char lon_ew;         // E or W
-  bool valid;          // A = valid fix, V = invalid
+  uint32_t time;    // UTC time as HHMMSS integer (HH*10000 + MM*100 + SS); e.g. 123456 = 12:34:56
+  uint32_t date;    // UTC date as DDMMYY integer; not used by WSPR scheduler
+  long lat;         // Latitude raw digits with decimal stripped: DDMM.MMMM → DDMMmmmm
+                    // Convert to decimal degrees: (lat/1000000) + (lat%1000000)/600000.0
+  long lon;         // Longitude raw digits: DDDMM.MMMM → DDDMMmmmm; same conversion
+  char lat_ns;      // Hemisphere: 'N' (positive) or 'S' (negate result)
+  char lon_ew;      // Hemisphere: 'E' (positive) or 'W' (negate result)
+  bool valid;       // Fix status from field 2: true='A' (active/valid), false='V' (void)
 };
 
+/** Last successfully parsed $GPRMC sentence; updated by gpsUpdate(). */
 extern volatile GPRMCData gpsData;
-// Working locator: set from cfg.locator on boot, updated by GPS when cfg.locator is empty
+
+/**
+ * Active Maidenhead locator (4 characters + NUL).
+ * Initialised from cfg.locator at boot; overwritten by GPS when cfg.locator is empty.
+ * Empty string means no locator is available yet — TX is withheld until it is set.
+ */
 extern char loc[7];
 
-/** Initialize the GPS serial port; returns true if any data is received within 1 s. */
+/** Open the GPS software serial port at 9600 baud; returns true if any byte is received within 1 s. */
 bool gpsInit();
+
 /**
- * Poll GPS serial for up to 1 second and print a status line on new data.
- * Returns seconds to the next even 2-minute WSPR slot, or -1 if no valid time.
+ * Poll the GPS serial port for 1 second, parse incoming $GPRMC sentences,
+ * update gpsData and loc[], and print a status line on new data.
+ * Returns seconds until the next even-minute WSPR TX slot, or -1 if no valid time.
  */
 int gpsUpdate();
-/** Compute a 4-character Maidenhead locator from decimal lat/lon into loc[5]. */
-void getLocator(char *loc, float lat, float lng);
+
+/**
+ * Compute a 4-character Maidenhead grid square from decimal lat/lon.
+ * Result is written into buf[5] (4 characters + NUL terminator).
+ */
+void getLocator(char *buf, float lat, float lng);
