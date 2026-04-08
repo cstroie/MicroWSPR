@@ -61,7 +61,7 @@ private:
   #define _MSC 0x80000
 
   /** Write a byte to a Si5351 register. */
-  void SendRegister(uint8_t reg, uint8_t val) {
+  void sendRegister(uint8_t reg, uint8_t val) {
     Wire.beginTransmission(SI5351_ADDR);
     Wire.write(reg);
     Wire.write(val);
@@ -69,11 +69,20 @@ private:
   }
 
   /** Write n bytes to consecutive Si5351 registers starting at reg. */
-  void SendRegisterBulk(uint8_t reg, uint8_t* data, uint8_t n) {
+  void sendRegisterBulk(uint8_t reg, uint8_t* data, uint8_t n) {
     Wire.beginTransmission(SI5351_ADDR);
     Wire.write(reg);
     while (n--) Wire.write(*data++);
     Wire.endTransmission();
+  }
+
+  /** Read a byte from a Si5351 register. */
+  uint8_t recvRegister(uint8_t reg) {
+    Wire.beginTransmission(SI5351_ADDR);
+    Wire.write(reg);
+    Wire.endTransmission();
+    Wire.requestFrom(SI5351_ADDR, (uint8_t)1);
+    return Wire.read();
   }
 
 public:
@@ -81,14 +90,14 @@ public:
   bool init(uint8_t, uint32_t, int32_t) {
     Wire.begin();
     Wire.setClock(400000UL);
-    SendRegister(3, 0xFF);
-    for (uint8_t i = 0; i < 6; i++) SendRegister(16 + i, 0x80);
-    SendRegister(3, 0xFF);
+    sendRegister(3, 0xFF);
+    for (uint8_t i = 0; i < 6; i++) sendRegister(16 + i, 0x80);
+    sendRegister(3, 0xFF);
     return true;
   }
 
   /** Apply frequency correction; corr (Hz) is subtracted from the crystal frequency. */
-  void set_correction(int32_t corr, uint8_t) {
+  void setCorrection(int32_t corr, uint8_t) {
     fxtal = F_XTAL - corr;
   }
 
@@ -96,7 +105,7 @@ public:
    * Set output frequency on clk (0-2); only CLK2 is used for WSPR.
    * Integer-N PLL mode gives adequate precision for WSPR tones with minimal code.
    */
-  void set_freq(uint32_t fout, uint8_t clk) {
+  void setFreq(uint32_t fout, uint8_t clk) {
     uint8_t rdiv = 0;
     if (fout < 500000) { rdiv = 7; fout *= 128; }
     uint16_t d = (16 * fxtal) / fout;
@@ -117,34 +126,25 @@ public:
       (uint8_t)(msp2 >> 8),
       (uint8_t)(msp2)
     };
-    SendRegisterBulk(34, pll_regs, 8);  // PLLB only (CLK2 uses PLLB per reg 18)
+    sendRegisterBulk(34, pll_regs, 8);  // PLLB only (CLK2 uses PLLB per reg 18)
     msp1 = (128 * msa - 512) | (((uint32_t)rdiv) << 20);
     uint8_t ms_regs[8] = {0, 1, (uint8_t)(msp1 >> 16), (uint8_t)(msp1 >> 8), (uint8_t)(msp1), 0, 0, 0};
-    SendRegisterBulk(58, ms_regs, 8);   // MS2 only (42+16, CLK2)
-    SendRegister(18, 0x6C);             // CLK2: PLLB, integer mode, inverted, 6mA
-    if (iqmsa != msa) { iqmsa = msa; SendRegister(177, 0xA0); }
+    sendRegisterBulk(58, ms_regs, 8);   // MS2 only (42+16, CLK2)
+    sendRegister(18, 0x6C);             // CLK2: PLLB, integer mode, inverted, 6mA
+    if (iqmsa != msa) { iqmsa = msa; sendRegister(177, 0xA0); }
     _fout = fout; _div = d; _msa128min512 = msa * 128 - 512; _msb128 = msb;
   }
 
   /** Enable (1) or disable (0) clock output clk (0-2). */
-  void output_enable(uint8_t clk, uint8_t enable) {
-    if (enable) SendRegister(3, ~(1 << clk));  // clear bit → enable output
-    else        SendRegister(3, 0xFF);          // all bits set → all disabled
+  void outputEnable(uint8_t clk, uint8_t enable) {
+    if (enable) sendRegister(3, ~(1 << clk));  // clear bit → enable output
+    else        sendRegister(3, 0xFF);          // all bits set → all disabled
   }
 
   /** Set drive strength for clk (0-2): 0=2mA, 1=4mA, 2=6mA, 3=8mA. */
-  void drive_strength(uint8_t clk, uint8_t strength) {
-    uint8_t val = RecvRegister(16 + clk);
-    SendRegister(16 + clk, (val & 0xF9) | (strength << 1));
-  }
-
-  /** Read a byte from a Si5351 register. */
-  uint8_t RecvRegister(uint8_t reg) {
-    Wire.beginTransmission(SI5351_ADDR);
-    Wire.write(reg);
-    Wire.endTransmission();
-    Wire.requestFrom(SI5351_ADDR, (uint8_t)1);
-    return Wire.read();
+  void driveStrength(uint8_t clk, uint8_t strength) {
+    uint8_t val = recvRegister(16 + clk);
+    sendRegister(16 + clk, (val & 0xF9) | (strength << 1));
   }
 };
 
@@ -193,12 +193,12 @@ void transmit(uint8_t band = 0) {
   Serial.print(F(" "));
   Serial.println(wsprBaseFrq[band] + wsprChanFrq, 3);
 #endif
-  DDS.output_enable(2, 1);
+  DDS.outputEnable(2, 1);
   digitalWrite(LED_BUILTIN, HIGH);
   nextSym = millis();
   for (uint8_t i = 0; i < WSPR_SYMBOL_COUNT; i++) {
     wsprSymbFrq = wsprBaseFrq[band] + wsprChanFrq + (txBuf[i] * wsprToneSep / 1000.0);
-    DDS.set_freq(wsprSymbFrq * 100, 2);
+    DDS.setFreq(wsprSymbFrq * 100, 2);
     nextSym += wsprToneDur;
 #ifdef DEBUG
     Serial.print(i); Serial.print(' ');
@@ -208,7 +208,7 @@ void transmit(uint8_t band = 0) {
     while (millis() < nextSym);
   }
   digitalWrite(LED_BUILTIN, LOW);
-  DDS.output_enable(2, 0);
+  DDS.outputEnable(2, 0);
 }
 
 // ── GPS ──────────────────────────────────────────────────────────────────────
@@ -342,10 +342,10 @@ void setup() {
 
   DDS.init(8, 0, 0);
 #if CALIBRATION != 0
-  DDS.set_correction(CALIBRATION, 0);
+  DDS.setCorrection(CALIBRATION, 0);
 #endif
-  DDS.drive_strength(2, 2);  // strength: 0=2mA, 1=4mA, 2=6mA, 3=8mA
-  DDS.output_enable(2, 0);
+  DDS.driveStrength(2, 2);  // strength: 0=2mA, 1=4mA, 2=6mA, 3=8mA
+  DDS.outputEnable(2, 0);
   pinMode(LED_BUILTIN, OUTPUT);
 
   randomSeed(getRandomSeed());
