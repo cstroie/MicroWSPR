@@ -95,5 +95,9 @@ void configSave();
  * Presents a numbered menu, reads single-character choices, dispatches to field
  * editors, and returns when the user selects Save (S) or Quit (Q).
  * Serial timeout is set to 30 s so the loop does not block indefinitely.
+ *
+ * testToneFn — optional callback invoked by the 'T' test-tone option.
+ *   Called with the user-entered frequency in Hz and the configured CLK output.
+ *   Pass nullptr to disable the test-tone option.
  */
-void configTUI();
+void configTUI(void (*testToneFn)(uint32_t freqHz, uint8_t clk) = nullptr);

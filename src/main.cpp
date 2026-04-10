@@ -194,7 +194,7 @@ void transmit(uint8_t band = 0) {
   nextSym = millis();
   for (uint8_t i = 0; i < WSPR_SYMBOL_COUNT; i++) {
     wsprSymbFrq = wsprBaseFrq[band] + wsprChanFrq + (txBuf[i] * wsprToneSep / 1000.0);
-    DDS.setFreq(wsprSymbFrq * 100, cfg.clkOutput);
+    DDS.setFreq((uint32_t)wsprSymbFrq, cfg.clkOutput);
     nextSym += wsprToneDur;
     while (millis() < nextSym);
   }
@@ -245,6 +245,20 @@ long getRandomSeed(int numBits = 31) {
   Serial.print(F("Entropy: 0x"));
   Serial.println(result, HEX);
   return result;
+}
+
+// ── test tone ────────────────────────────────────────────────────────────────
+
+/**
+ * Output a continuous carrier at freqHz on clk for 10 seconds, then disable.
+ * Used by the config TUI 'T' option to verify Si5351 frequency accuracy.
+ * The caller is responsible for printing before/after messages.
+ */
+static void testTone(uint32_t freqHz, uint8_t clk) {
+  DDS.setFreq(freqHz, clk);
+  DDS.outputEnable(clk, 1);
+  delay(10000);
+  DDS.outputEnable(clk, 0);
 }
 
 // ── setup ────────────────────────────────────────────────────────────────────
@@ -328,7 +342,7 @@ void setup() {
   while (millis() < deadline) {
     if (Serial.available()) {
       while (Serial.available()) Serial.read();  // discard the trigger byte(s)
-      configTUI();
+      configTUI(testTone);
       strncpy(loc, cfg.locator, sizeof(loc));
       curBand = 0; advanceBand(); nextTXTime = 0;
       break;
@@ -338,7 +352,7 @@ void setup() {
   // Enforce a real callsign — N0CALL is the factory default placeholder
   while (cfg.callsign[0] == '\0' || strcmp(cfg.callsign, "N0CALL") == 0) {
     Serial.println(F("Callsign not set. Please configure."));
-    configTUI();
+    configTUI(testTone);
     strncpy(loc, cfg.locator, sizeof(loc));
     curBand = 0; advanceBand(); nextTXTime = 0;
   }
@@ -348,7 +362,7 @@ void setup() {
   if (!gpsDetected && cfg.locator[0] == '\0') {
     Serial.println(F("No GPS detected and no locator set. Please configure."));
     while (cfg.locator[0] == '\0') {
-      configTUI();
+      configTUI(testTone);
       strncpy(loc, cfg.locator, sizeof(loc));
     }
     curBand = 0; advanceBand(); nextTXTime = 0;

@@ -123,19 +123,19 @@ void SI5351::setFreq(uint32_t fout, uint8_t clk) {
   // In integer mode MSP2=0, MSC=1, MSP1 = 128*d - 512 (AN619 eq. 24).
   // rdiv is placed in bits 22-20 of the first MS parameter word.
   // MS register base: 42 + clk*8  (CLK0→42, CLK1→50, CLK2→58)
-  msp1 = (128 * msa - 512) | (((uint32_t)rdiv) << 20);
+  msp1 = (128 * d - 512) | (((uint32_t)rdiv) << 20);
   uint8_t ms_regs[8] = {0, 1, (uint8_t)(msp1 >> 16), (uint8_t)(msp1 >> 8), (uint8_t)(msp1), 0, 0, 0};
   sendRegisterBulk(42 + clk * 8, ms_regs, 8);
 
   // ── step 6: CLKn control register ─────────────────────────────────────────
-  // Reg 16+clk = 0x6C = 0110 1100:
+  // Reg 16+clk = 0x6C | _drv:
   //   bit 7 = 0: CLKn powered on
   //   bit 6 = 1: integer mode
   //   bit 5 = 1: PLLB as source
   //   bit 4 = 0: not inverted
   //   bits 3-2 = 11: MultiSynth N as clock source
-  //   bits 1-0 = 00: 2 mA drive (overridden by driveStrength() in setup)
-  sendRegister(16 + clk, 0x6C);
+  //   bits 1-0 = drive strength (from driveStrength())
+  sendRegister(16 + clk, 0x6C | _drv);
 
   // ── step 7: reset PLLB only when the VCO multiplier d changes ─────────────
   // Changing d means fvcoa changes, so the PLL must relock. When d is stable
@@ -155,8 +155,8 @@ void SI5351::outputEnable(uint8_t clk, uint8_t enable) {
 }
 
 void SI5351::driveStrength(uint8_t clk, uint8_t strength) {
-  // Bits 1-0 of CLKn control register (16+n) set drive current.
-  // Read-modify-write: preserve all other control bits, update bits 1-0 only.
-  uint8_t val = recvRegister(16 + clk);
-  sendRegister(16 + clk, (val & 0xF9) | (strength << 1));  // 0xF9 = 1111 1001
+  // Cache bits 1-0 (drive current: 0=2mA, 1=4mA, 2=6mA, 3=8mA).
+  // setFreq() applies _drv to the CLK control register on each call, so
+  // caching here is sufficient — no need to write the register immediately.
+  _drv = strength & 0x03;
 }

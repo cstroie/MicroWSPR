@@ -93,6 +93,7 @@ static void showConfig() {
   Serial.println(F("--------------------------------"));
   Serial.println(F("  S. Save and exit"));
   Serial.println(F("  Q. Quit without saving"));
+  Serial.println(F("  T. Test tone (10 s carrier)"));
   Serial.println(F("================================"));
 }
 
@@ -339,9 +340,9 @@ void configSave() {
   Serial.println(F("Configuration saved."));
 }
 
-void configTUI() {
+void configTUI(void (*testToneFn)(uint32_t freqHz, uint8_t clk)) {
   Serial.setTimeout(30000);
-  char buf[2];
+  char buf[8];
 
   while (true) {
     showConfig();
@@ -361,6 +362,23 @@ void configTUI() {
       case '9': editGpsPin(F("GPS TX pin (0-19) ["), &cfg.gpsTxPin); break;
       case 'S': configSave();     return;
       case 'Q':                   return;
+      case 'T':
+        if (testToneFn) {
+          Serial.print(F("Frequency kHz [7040]: "));
+          readLine(buf, 7);
+          uint32_t freqHz = (buf[0] != '\0') ? (uint32_t)(atof(buf) * 1000.0f + 0.5f)
+                                             : 7040000UL;
+          Serial.print(F("Tone at "));
+          Serial.print(freqHz / 1000.0, 3);
+          Serial.print(F(" kHz on CLK"));
+          Serial.print(cfg.clkOutput);
+          Serial.println(F(" for 10 s — measure now."));
+          testToneFn(freqHz, cfg.clkOutput);
+          Serial.println(F("Tone off."));
+        } else {
+          Serial.println(F("Test tone not available."));
+        }
+        break;
       default:  Serial.println(F("Unknown option.")); break;
     }
   }

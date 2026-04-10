@@ -45,6 +45,7 @@ private:
   volatile uint32_t _msb128;        // last MSP2 fractional numerator * 128
   int16_t  iqmsa;   // last msa value written; PLL reset triggered when this changes
   uint32_t fxtal;   // effective crystal frequency after correction (Hz)
+  uint8_t  _drv;    // cached drive strength bits (0-3 → 2/4/6/8 mA) for CLK control register
 
   /** Write a single byte to Si5351 register reg over I2C. */
   void sendRegister(uint8_t reg, uint8_t val);
