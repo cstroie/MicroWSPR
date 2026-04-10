@@ -66,9 +66,9 @@ static void printSlot(int rem, uint32_t nextTXTime) {
  *   0  sentence ID    "GPRMC" — verified character by character
  *   1  UTC time       HHMMSS.ss — only integer part (6 digits) accumulated
  *   2  status         A=valid, V=void
- *   3  latitude       DDMM.MMMM — all digits accumulated, decimal point skipped
+ *   3  latitude       DDMM.MMMM(M) — integer digits + up to 4 fractional digits; decimal skipped
  *   4  lat hemisphere N or S
- *   5  longitude      DDDMM.MMMM — same as latitude
+ *   5  longitude      DDDMM.MMMM(M) — same as latitude
  *   6  lon hemisphere E or W — last field we need; triggers return true
  *
  * Numeric storage format for lat/lon:
@@ -84,9 +84,10 @@ static bool parseGPRMC(char c) {
   static uint8_t pos    = 0;     // position within current field
   static uint8_t hdrIdx = 0;     // index into "GPRMC" header
   static long    acc    = 0;     // digit accumulator
+  static uint8_t frac   = 0;     // fractional digit counter for lat/lon fields
 
   // '$' resets the state machine unconditionally — start of a new sentence
-  if (c == '$') { field = 0; pos = 0; hdrIdx = 0; acc = 0; return false; }
+  if (c == '$') { field = 0; pos = 0; hdrIdx = 0; acc = 0; frac = 0; return false; }
   if (field == 0xFF) return false;
   // '*' begins the checksum, '\r'/'\n' end the line — sentence is complete (or abandoned)
   if (c == '\r' || c == '\n' || c == '*') { field = 0xFF; return false; }
@@ -98,7 +99,7 @@ static bool parseGPRMC(char c) {
       case 3: gpsData.lat  = acc; break;   // commit DDMMmmmm
       case 5: gpsData.lon  = acc; break;   // commit DDDMMmmmm
     }
-    field++; pos = 0; acc = 0;
+    field++; pos = 0; acc = 0; frac = 0;
     return false;
   }
 
@@ -114,9 +115,15 @@ static bool parseGPRMC(char c) {
     case 2:  // fix validity: 'A' = active (valid), 'V' = void (no fix)
       if (pos == 0) { gpsData.valid = (c == 'A'); pos++; }
       break;
-    case 3:  // latitude DDMM.MMMM → accumulate all digits, skip decimal point
-    case 5:  // longitude DDDMM.MMMM → same treatment
-      if (c != '.' && c >= '0' && c <= '9') acc = acc * 10 + (c - '0');
+    case 3:  // latitude DDMM.MMMM — accumulate integer digits, then at most 4 fractional
+    case 5:  // longitude DDDMM.MMMM — same treatment
+      if (c == '.') { pos = 1; }                           // pos=1: past decimal point
+      else if (c >= '0' && c <= '9') {
+        if (pos == 0 || frac < 4) {                        // integer part or ≤4 frac digits
+          acc = acc * 10 + (c - '0');
+          if (pos) frac++;                                  // count fractional digits
+        }
+      }
       break;
     case 4:  // latitude hemisphere: 'N' or 'S'
       if (pos == 0) { gpsData.lat_ns = c; pos++; }
